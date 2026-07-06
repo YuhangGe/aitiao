@@ -52,8 +52,18 @@ android {
         buildConfigField("String", "AITIAO_BASE_URL", "\"${envDefault("AITIAO_BASE_URL")}\"")
     }
 
+    signingConfigs {
+        create("release") {
+            storeFile = rootProject.file("aitiao-release.jks")
+            storePassword = "aitiao123"
+            keyAlias = "aitiao"
+            keyPassword = "aitiao123"
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig = signingConfigs.getByName("release")
             optimization {
                 enable = false
             }
