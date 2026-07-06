@@ -1,0 +1,6 @@
+<resources>
+    <string name="app_name">爱跳跳</string>
+    <string name="skip">跳过</string>
+    <string name="dont_skip">不跳过</string>
+    <string name="accessibility_service_description">爱跳跳使用无障碍服务监控应用启动，在检测到开屏广告时自动点击跳过按钮。</string>
+</resources>
