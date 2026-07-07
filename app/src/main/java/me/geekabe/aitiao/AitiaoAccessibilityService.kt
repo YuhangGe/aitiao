@@ -21,7 +21,6 @@ import android.provider.Settings
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.widget.Toast
-import androidx.annotation.RequiresApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -34,6 +33,7 @@ import java.lang.ref.WeakReference
 import kotlin.coroutines.resume
 import kotlin.time.Duration.Companion.milliseconds
 import androidx.core.graphics.scale
+import androidx.core.net.toUri
 
 /**
  * 爱跳跳无障碍服务
@@ -77,7 +77,7 @@ class AitiaoAccessibilityService : AccessibilityService() {
 
         fun openBatteryOptimizationIntent(): Intent =
             Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                data = android.net.Uri.parse("package:me.geekabe.aitiao")
+                data = "package:me.geekabe.aitiao".toUri()
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
     }
@@ -89,8 +89,7 @@ class AitiaoAccessibilityService : AccessibilityService() {
     private val stopReceiver = StopReceiver()
     private var skipCount: Int = 0
 
-    @RequiresApi(Build.VERSION_CODES.O)
-    private val prefsChangeListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+private val prefsChangeListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
         refreshSkipList()
         try { updateNotificationAppCount() } catch (_: Exception) {}
     }
@@ -113,8 +112,7 @@ class AitiaoAccessibilityService : AccessibilityService() {
 
     // ─── 生命周期 ────────────────────────────────────────────────
 
-    @RequiresApi(Build.VERSION_CODES.O)
-    override fun onServiceConnected() {
+override fun onServiceConnected() {
         super.onServiceConnected()
         LogCollector.i(TAG, "无障碍服务已连接")
         instanceRef = WeakReference(this)
@@ -127,8 +125,7 @@ class AitiaoAccessibilityService : AccessibilityService() {
         showPersistentNotification()
     }
 
-    @RequiresApi(Build.VERSION_CODES.O)
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
         if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
 
@@ -157,15 +154,13 @@ class AitiaoAccessibilityService : AccessibilityService() {
         handleAdSkip(packageName)
     }
 
-    @RequiresApi(Build.VERSION_CODES.O)
-    override fun onInterrupt() {
+override fun onInterrupt() {
         LogCollector.w(TAG, "无障碍服务被中断，尝试恢复…")
         refreshSkipList()
         showPersistentNotification()
     }
 
-    @RequiresApi(Build.VERSION_CODES.O)
-    override fun onDestroy() {
+override fun onDestroy() {
         super.onDestroy()
         try { unregisterReceiver(stopReceiver) } catch (_: Exception) {}
         getSharedPreferences("skip_status", MODE_PRIVATE)
@@ -183,8 +178,7 @@ class AitiaoAccessibilityService : AccessibilityService() {
 
     // ─── 常驻通知 ────────────────────────────────────────────────
 
-    @RequiresApi(Build.VERSION_CODES.O)
-    private fun showPersistentNotification() {
+private fun showPersistentNotification() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
                 != PackageManager.PERMISSION_GRANTED
@@ -197,14 +191,12 @@ class AitiaoAccessibilityService : AccessibilityService() {
         nm.notify(NOTIFICATION_ID, buildNotification())
     }
 
-    @RequiresApi(Build.VERSION_CODES.O)
-    private fun updateNotificationAppCount() {
+private fun updateNotificationAppCount() {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.notify(NOTIFICATION_ID, buildNotification())
     }
 
-    @RequiresApi(Build.VERSION_CODES.O)
-    private fun buildNotification(): Notification {
+private fun buildNotification(): Notification {
         // 点击通知 → 打开主程序
         val openAppIntent = PendingIntent.getActivity(
             this, 0,
@@ -245,24 +237,21 @@ class AitiaoAccessibilityService : AccessibilityService() {
     }
 
     private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                NOTIFICATION_CHANNEL_ID,
-                "爱跳跳服务",
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "显示爱跳跳无障碍服务的运行状态"
-                setShowBadge(false)
-            }
-            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            nm.createNotificationChannel(channel)
+        val channel = NotificationChannel(
+            NOTIFICATION_CHANNEL_ID,
+            "爱跳跳服务",
+            NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            description = "显示爱跳跳无障碍服务的运行状态"
+            setShowBadge(false)
         }
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        nm.createNotificationChannel(channel)
     }
 
     // ─── 跳过列表管理 ───────────────────────────────────────────
 
-    @RequiresApi(Build.VERSION_CODES.O)
-    private fun refreshSkipList() {
+private fun refreshSkipList() {
         val prefs = getSharedPreferences("skip_status", Context.MODE_PRIVATE)
         skipPackages = prefs.all
             .filter { (_, value) -> value == true }
@@ -273,8 +262,7 @@ class AitiaoAccessibilityService : AccessibilityService() {
 
     // ─── 广告跳过主流程 ──────────────────────────────────────────
 
-    @RequiresApi(Build.VERSION_CODES.O)
-    private fun handleAdSkip(packageName: String) {
+private fun handleAdSkip(packageName: String) {
         if (packageName !in skipPackages) return
 
         serviceScope.launch {
@@ -325,7 +313,6 @@ class AitiaoAccessibilityService : AccessibilityService() {
     }
 
     /** 将截图回调转换为 suspend 函数 */
-    @RequiresApi(Build.VERSION_CODES.R)
     private suspend fun takeScreenshotAsync(): Bitmap? {
         return suspendCancellableCoroutine { continuation ->
             takeScreenshot(
@@ -352,8 +339,7 @@ class AitiaoAccessibilityService : AccessibilityService() {
 
     // ─── AI 识别结果处理 ─────────────────────────────────────────
 
-    @RequiresApi(Build.VERSION_CODES.O)
-    private suspend fun processAIResult(bitmap: Bitmap, config: AiConfig, packageName: String, rootViewIdFingerprint: String) {
+private suspend fun processAIResult(bitmap: Bitmap, config: AiConfig, packageName: String, rootViewIdFingerprint: String) {
         LogCollector.i(TAG, "开始 AI 识别…")
 
         // 获取屏幕参数
@@ -396,8 +382,7 @@ class AitiaoAccessibilityService : AccessibilityService() {
 
     // ─── 点击手势 ────────────────────────────────────────────────
 
-    @RequiresApi(Build.VERSION_CODES.O)
-    private fun performClick(x: Float, y: Float) {
+private fun performClick(x: Float, y: Float) {
         val path = Path().apply { moveTo(x, y) }
 
         val stroke = GestureDescription.StrokeDescription(path, 0, 100)
