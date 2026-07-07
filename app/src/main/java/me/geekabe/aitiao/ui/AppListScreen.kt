@@ -7,7 +7,9 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
 import android.provider.Settings
+import android.view.Gravity
 import android.widget.ImageView
+import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
@@ -18,8 +20,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import com.dokar.sonner.Toaster
-import com.dokar.sonner.rememberToasterState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -77,7 +77,6 @@ fun AppListScreen(
     val allApps = remember { mutableStateListOf<AppInfo>() }
     val prefs = remember { context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE) }
     var loading by remember { mutableStateOf(true) }
-    val toaster = rememberToasterState()
 
     // 每次进入此页面都重新加载、刷新各开关状态
     var a11yEnabled by remember { mutableStateOf(false) }
@@ -229,7 +228,7 @@ fun AppListScreen(
                             } else {
                                 val config = AiSettings.load(context)
                                 if (config.apiKey.isBlank() || config.modelId.isBlank()) {
-                                    toaster.show("请先配置 AI 大模型参数")
+                                    Toast.makeText(context, "请先配置 AI 大模型参数", Toast.LENGTH_SHORT).show()
                                 } else {
                                     context.startActivity(AitiaoAccessibilityService.openSettingsIntent())
                                 }
@@ -270,10 +269,7 @@ fun AppListScreen(
                 }
             }
         }
-            Toaster(
-                state = toaster,
-                alignment = Alignment.TopCenter
-            )
+
         }
     }
 }
