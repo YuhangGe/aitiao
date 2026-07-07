@@ -11,6 +11,7 @@ import androidx.compose.runtime.setValue
 import me.geekabe.aitiao.ui.AppConfigScreen
 import me.geekabe.aitiao.ui.AppListScreen
 import me.geekabe.aitiao.ui.FingerprintDetailScreen
+import me.geekabe.aitiao.ui.LogScreen
 import me.geekabe.aitiao.ui.SettingsScreen
 import me.geekabe.aitiao.ui.theme.AitiaoTheme
 
@@ -30,6 +31,7 @@ class MainActivity : ComponentActivity() {
                 when (currentScreen) {
                     Screen.APP_LIST -> AppListScreen(
                         onNavigateToSettings = { currentScreen = Screen.SETTINGS },
+                        onNavigateToLog = { currentScreen = Screen.LOG },
                         onNavigateToConfig = { currentScreen = Screen.APP_CONFIG },
                         onAppClick = { appInfo ->
                             selectedPackageName = appInfo.packageName
@@ -48,6 +50,9 @@ class MainActivity : ComponentActivity() {
                         appName = selectedAppName,
                         onBack = { currentScreen = Screen.APP_LIST }
                     )
+                    Screen.LOG -> LogScreen(
+                        onBack = { currentScreen = Screen.APP_LIST }
+                    )
                 }
             }
         }
@@ -58,5 +63,6 @@ private enum class Screen {
     APP_LIST,
     APP_CONFIG,
     SETTINGS,
-    FINGERPRINT_DETAIL
+    FINGERPRINT_DETAIL,
+    LOG
 }

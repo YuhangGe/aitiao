@@ -98,7 +98,7 @@ class AitiaoAccessibilityService : AccessibilityService() {
     class StopReceiver : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action != ACTION_STOP_SERVICE) return
-            Log.i(TAG, "用户通过通知停止服务")
+            LogCollector.i(TAG, "用户通过通知停止服务")
             val service = instanceRef?.get()
             service?.cancelNotification()
             service?.disableSelf()
@@ -110,7 +110,7 @@ class AitiaoAccessibilityService : AccessibilityService() {
     @RequiresApi(Build.VERSION_CODES.O)
     override fun onServiceConnected() {
         super.onServiceConnected()
-        Log.i(TAG, "无障碍服务已连接")
+        LogCollector.i(TAG, "无障碍服务已连接")
         instanceRef = WeakReference(this)
         ContextCompat.registerReceiver(
             this, stopReceiver, IntentFilter(ACTION_STOP_SERVICE), ContextCompat.RECEIVER_NOT_EXPORTED
@@ -143,14 +143,14 @@ class AitiaoAccessibilityService : AccessibilityService() {
         if (lastTime != null && (now - lastTime) < DEBOUNCE_MS) return
 
         lastTriggerTime[packageName] = now
-        Log.i(TAG, "检测到目标应用启动: $packageName")
+        LogCollector.i(TAG, "检测到目标应用启动: $packageName")
 
         handleAdSkip(packageName)
     }
 
     @RequiresApi(Build.VERSION_CODES.O)
     override fun onInterrupt() {
-        Log.w(TAG, "无障碍服务被中断，尝试恢复…")
+        LogCollector.w(TAG, "无障碍服务被中断，尝试恢复…")
         refreshSkipList()
         showPersistentNotification()
     }
@@ -161,11 +161,11 @@ class AitiaoAccessibilityService : AccessibilityService() {
         instanceRef = null
         cancelNotification()
         serviceScope.cancel()
-        Log.i(TAG, "无障碍服务已销毁")
+        LogCollector.i(TAG, "无障碍服务已销毁")
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
-        Log.w(TAG, "无障碍服务 onUnbind，系统将在需要时重新绑定")
+        LogCollector.w(TAG, "无障碍服务 onUnbind，系统将在需要时重新绑定")
         return true
     }
 
@@ -255,7 +255,7 @@ class AitiaoAccessibilityService : AccessibilityService() {
         skipPackages = prefs.all
             .filter { (_, value) -> value == true }
             .keys
-        Log.i(TAG, "跳过列表已刷新: ${skipPackages.size} 个应用")
+        LogCollector.i(TAG, "跳过列表已刷新: ${skipPackages.size} 个应用")
         try { updateNotificationAppCount() } catch (_: Exception) {}
     }
 
@@ -272,7 +272,7 @@ class AitiaoAccessibilityService : AccessibilityService() {
             // Step 1: 检查 View 指纹缓存
             val root = rootInActiveWindow
             if (root == null) {
-                Log.w(TAG, "rootInActiveWindow not found!")
+                LogCollector.w(TAG, "rootInActiveWindow not found!")
                 return@launch
             }
 
@@ -280,27 +280,27 @@ class AitiaoAccessibilityService : AccessibilityService() {
             val cached = ViewFingerprintCache.get(packageName, rootViewIdFingerprint, this@AitiaoAccessibilityService)
             if (cached != null) {
                 if (cached.isAdPage) {
-                    Log.i(TAG, "找到缓存，跳过按钮位置: (${cached.skipX}, ${cached.skipY})")
+                    LogCollector.i(TAG, "找到缓存，跳过按钮位置: (${cached.skipX}, ${cached.skipY})")
                     performClick(cached.skipX.toFloat(), cached.skipY.toFloat())
                 } else {
-                    Log.i(TAG, "找到缓存，非广告页。")
+                    LogCollector.i(TAG, "找到缓存，非广告页。")
                 }
                 return@launch
             }
 
             // Step 2: 无缓存 → 截图 + 大模型识别
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                Log.w(TAG, "当前系统版本不支持无障碍截图（需要 Android 14+）")
+                LogCollector.w(TAG, "当前系统版本不支持无障碍截图（需要 Android 14+）")
                 return@launch
             }
 
             val config = AiSettings.load(this@AitiaoAccessibilityService)
             if (config.apiKey.isBlank() || config.modelId.isBlank()) {
-                Log.w(TAG, "AI 配置未完成，跳过识别")
+                LogCollector.w(TAG, "AI 配置未完成，跳过识别")
                 return@launch
             }
 
-            Log.i(TAG, "无缓存指纹，回退到 AI 识别…")
+            LogCollector.i(TAG, "无缓存指纹，回退到 AI 识别…")
 
             val bitmap = takeScreenshotAsync() ?: run {
                 Log.e(TAG, "截图失败或返回 null")
@@ -340,7 +340,7 @@ class AitiaoAccessibilityService : AccessibilityService() {
     // ─── AI 识别结果处理 ─────────────────────────────────────────
 
     private suspend fun processAIResult(bitmap: Bitmap, config: AiConfig, packageName: String, rootViewIdFingerprint: String) {
-        Log.i(TAG, "开始 AI 识别…")
+        LogCollector.i(TAG, "开始 AI 识别…")
 
         // 获取屏幕参数
         val density = resources.displayMetrics.density
@@ -355,7 +355,7 @@ class AitiaoAccessibilityService : AccessibilityService() {
         val scaledBitmap = bitmap.scale(scaledWidth, scaledHeight)
         bitmap.recycle()
 
-        Log.i(TAG, "截图已缩放: ${origWidth}x${origHeight} → ${scaledWidth}x${scaledHeight} (density=$density)")
+        LogCollector.i(TAG, "截图已缩放: ${origWidth}x${origHeight} → ${scaledWidth}x${scaledHeight} (density=$density)")
 
         // 网络 IO 切换到后台线程
         val result = withContext(Dispatchers.IO) {
@@ -369,12 +369,12 @@ class AitiaoAccessibilityService : AccessibilityService() {
         }
 
         if (result.isAd) {
-            Log.i(TAG, "AI 检测到开屏广告，跳过按钮: (${result.skipX}, ${result.skipY})")
+            LogCollector.i(TAG, "AI 检测到开屏广告，跳过按钮: (${result.skipX}, ${result.skipY})")
             val fingerprint = ViewFingerprintCache.fromAd(rootViewIdFingerprint, result.skipX, result.skipY)
             ViewFingerprintCache.put(packageName, rootViewIdFingerprint, fingerprint, this)
             performClick(result.skipX.toFloat(), result.skipY.toFloat())
         } else {
-            Log.i(TAG, "AI 判断非广告页面")
+            LogCollector.i(TAG, "AI 判断非广告页面")
             val fingerprint = ViewFingerprintCache.fromNoAd(rootViewIdFingerprint)
             ViewFingerprintCache.put(packageName, rootViewIdFingerprint, fingerprint, this)
         }
@@ -393,7 +393,7 @@ class AitiaoAccessibilityService : AccessibilityService() {
 
         val dispatched = dispatchGesture(gesture, null, null)
         if (dispatched) {
-            Log.i(TAG, "已在 ($x, $y) 执行点击")
+            LogCollector.i(TAG, "已在 ($x, $y) 执行点击")
             Toast.makeText(this, "已跳过广告", Toast.LENGTH_SHORT).show()
             skipCount++
             try { updateNotificationAppCount() } catch (_: Exception) {}

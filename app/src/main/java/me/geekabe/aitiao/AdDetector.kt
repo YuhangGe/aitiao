@@ -251,7 +251,7 @@ object AdDetector {
         val relativeY = json.optDouble("skip_y", 0.0).toFloat()
         val skipX = (relativeX * screenWidth).toInt()
         val skipY = (relativeY * screenHeight).toInt()
-        Log.i("XXX", "xxx $skipX, $skipY, $screenWidth, $screenHeight")
+        LogCollector.i("XXX", "xxx $skipX, $skipY, $screenWidth, $screenHeight")
         return AdResult(isAd = isAd, skipX = skipX, skipY = skipY)
     }
 }
