@@ -2,8 +2,8 @@ package me.geekabe.aitiao
 
 import android.Manifest
 import android.accessibilityservice.AccessibilityService
-import android.accessibilityservice.AccessibilityServiceInfo
 import android.accessibilityservice.GestureDescription
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -20,7 +20,7 @@ import android.os.Build
 import android.provider.Settings
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
-import android.view.accessibility.AccessibilityNodeInfo
+import android.widget.Toast
 import androidx.annotation.RequiresApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -87,6 +87,7 @@ class AitiaoAccessibilityService : AccessibilityService() {
      private var lastTriggerTime: MutableMap<String, Long> = mutableMapOf()
     private var currentForegroundPackage: String? = null
     private val stopReceiver = StopReceiver()
+    private var skipCount: Int = 0
 
     // ─── 停止广播接收器 ──────────────────────────────────────────
 
@@ -212,12 +213,17 @@ class AitiaoAccessibilityService : AccessibilityService() {
 
         return Notification.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setContentTitle("爱跳跳正在运行")
-            .setContentText("监控广告跳过中（${skipPackages.size} 个应用）")
+            .setContentText("监控广告跳过中（${skipPackages.size}个应用，已跳过${skipCount}次）")
             .setSmallIcon(android.R.drawable.ic_menu_close_clear_cancel)
             .setOngoing(true)
-            .setPriority(Notification.PRIORITY_LOW)
             .setContentIntent(openAppIntent)
-            .addAction(android.R.drawable.ic_media_pause, "停止", stopPendingIntent)
+            .addAction(
+                Notification.Action.Builder(
+                    android.graphics.drawable.Icon.createWithResource(this, android.R.drawable.ic_media_pause),
+                    "停止",
+                    stopPendingIntent
+                ).build()
+            )
             .build()
     }
 
@@ -388,6 +394,9 @@ class AitiaoAccessibilityService : AccessibilityService() {
         val dispatched = dispatchGesture(gesture, null, null)
         if (dispatched) {
             Log.i(TAG, "已在 ($x, $y) 执行点击")
+            Toast.makeText(this, "已跳过广告", Toast.LENGTH_SHORT).show()
+            skipCount++
+            try { updateNotificationAppCount() } catch (_: Exception) {}
         } else {
             Log.e(TAG, "点击手势派发失败")
         }

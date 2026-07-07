@@ -59,6 +59,12 @@ object ViewFingerprintCache {
         prefs(context).edit { remove(packageName) }
     }
 
+    fun removeFingerprint(packageName: String, viewIdFingerprint: String, context: Context) {
+        val list = cache[packageName] ?: return
+        list.removeAll { it.viewIdFingerprint == viewIdFingerprint }
+        saveToPrefs(packageName, list, context)
+    }
+
     private fun prefs(context: Context) =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 

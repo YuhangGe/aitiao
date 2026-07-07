@@ -221,7 +221,8 @@ object AdDetector {
         val codeBlockMatcher = codeBlockPattern.matcher(content)
         while (codeBlockMatcher.find()) {
             try {
-                val json = JSONObject(codeBlockMatcher.group(1).trim())
+                val group = codeBlockMatcher.group(1) ?: continue
+                val json = JSONObject(group.trim())
                 return jsonToAdResult(json, screenWidth, screenHeight)
             } catch (_: Exception) {
                 // 继续尝试下一个

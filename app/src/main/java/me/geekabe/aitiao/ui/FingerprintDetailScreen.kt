@@ -22,9 +22,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -159,7 +162,25 @@ fun FingerprintDetailScreen(
                     items = fingerprints,
                     key = { _, fp -> fp.viewIdFingerprint }
                 ) { index, fingerprint ->
-                    FingerprintCard(fingerprint = fingerprint, index = index + 1)
+                    val dismissState = rememberSwipeToDismissBoxState(
+                        confirmValueChange = { dismissValue ->
+                            if (dismissValue == SwipeToDismissBoxValue.EndToStart) {
+                                ViewFingerprintCache.removeFingerprint(
+                                    packageName, fingerprint.viewIdFingerprint, context
+                                )
+                                fingerprints.remove(fingerprint)
+                                true
+                            } else false
+                        }
+                    )
+                    SwipeToDismissBox(
+                        state = dismissState,
+                        enableDismissFromStartToEnd = false,
+                        enableDismissFromEndToStart = true,
+                        backgroundContent = {}
+                    ) {
+                        FingerprintCard(fingerprint = fingerprint, index = index + 1)
+                    }
                 }
 
                 item {
