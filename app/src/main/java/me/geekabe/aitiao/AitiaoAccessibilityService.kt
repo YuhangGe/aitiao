@@ -3,7 +3,6 @@ package me.geekabe.aitiao
 import android.Manifest
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
-import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -12,6 +11,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.SharedPreferences
 import androidx.core.content.ContextCompat
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -89,6 +89,12 @@ class AitiaoAccessibilityService : AccessibilityService() {
     private val stopReceiver = StopReceiver()
     private var skipCount: Int = 0
 
+    @RequiresApi(Build.VERSION_CODES.O)
+    private val prefsChangeListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+        refreshSkipList()
+        try { updateNotificationAppCount() } catch (_: Exception) {}
+    }
+
     // ─── 停止广播接收器 ──────────────────────────────────────────
 
     /**
@@ -116,9 +122,12 @@ class AitiaoAccessibilityService : AccessibilityService() {
             this, stopReceiver, IntentFilter(ACTION_STOP_SERVICE), ContextCompat.RECEIVER_NOT_EXPORTED
         )
         refreshSkipList()
+        getSharedPreferences("skip_status", MODE_PRIVATE)
+            .registerOnSharedPreferenceChangeListener(prefsChangeListener)
         showPersistentNotification()
     }
 
+    @RequiresApi(Build.VERSION_CODES.O)
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
         if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
@@ -155,9 +164,12 @@ class AitiaoAccessibilityService : AccessibilityService() {
         showPersistentNotification()
     }
 
+    @RequiresApi(Build.VERSION_CODES.O)
     override fun onDestroy() {
         super.onDestroy()
         try { unregisterReceiver(stopReceiver) } catch (_: Exception) {}
+        getSharedPreferences("skip_status", MODE_PRIVATE)
+            .unregisterOnSharedPreferenceChangeListener(prefsChangeListener)
         instanceRef = null
         cancelNotification()
         serviceScope.cancel()
@@ -261,6 +273,7 @@ class AitiaoAccessibilityService : AccessibilityService() {
 
     // ─── 广告跳过主流程 ──────────────────────────────────────────
 
+    @RequiresApi(Build.VERSION_CODES.O)
     private fun handleAdSkip(packageName: String) {
         if (packageName !in skipPackages) return
 
@@ -339,6 +352,7 @@ class AitiaoAccessibilityService : AccessibilityService() {
 
     // ─── AI 识别结果处理 ─────────────────────────────────────────
 
+    @RequiresApi(Build.VERSION_CODES.O)
     private suspend fun processAIResult(bitmap: Bitmap, config: AiConfig, packageName: String, rootViewIdFingerprint: String) {
         LogCollector.i(TAG, "开始 AI 识别…")
 
@@ -382,6 +396,7 @@ class AitiaoAccessibilityService : AccessibilityService() {
 
     // ─── 点击手势 ────────────────────────────────────────────────
 
+    @RequiresApi(Build.VERSION_CODES.O)
     private fun performClick(x: Float, y: Float) {
         val path = Path().apply { moveTo(x, y) }
 
