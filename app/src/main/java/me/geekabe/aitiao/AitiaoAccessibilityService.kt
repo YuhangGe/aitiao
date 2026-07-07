@@ -53,7 +53,6 @@ class AitiaoAccessibilityService : AccessibilityService() {
         private var instanceRef: WeakReference<AitiaoAccessibilityService>? = null
 
         private const val DEBOUNCE_MS = 5_000L
-        private const val RENDER_DELAY_MS = 1200L
 
         fun isEnabled(context: Context): Boolean {
             val enabledServices = Settings.Secure.getString(
@@ -267,7 +266,8 @@ private fun handleAdSkip(packageName: String) {
 
         serviceScope.launch {
             // 等待页面渲染完成
-            delay(RENDER_DELAY_MS.milliseconds)
+            val config = AiSettings.load(this@AitiaoAccessibilityService)
+            delay(config.renderDelayMs.milliseconds)
             if (packageName !in skipPackages) return@launch
 
             // Step 1: 检查 View 指纹缓存
@@ -295,7 +295,6 @@ private fun handleAdSkip(packageName: String) {
                 return@launch
             }
 
-            val config = AiSettings.load(this@AitiaoAccessibilityService)
             if (config.apiKey.isBlank() || config.modelId.isBlank()) {
                 LogCollector.w(TAG, "AI 配置未完成，跳过识别")
                 return@launch

@@ -47,10 +47,16 @@ fun SettingsScreen(
     var modelId by remember { mutableStateOf(savedConfig.modelId) }
     var apiKey by remember { mutableStateOf(savedConfig.apiKey) }
     var baseUrl by remember { mutableStateOf(savedConfig.baseUrl) }
+    var renderDelayMs by remember { mutableStateOf(savedConfig.renderDelayMs.toString()) }
     var apiKeyVisible by remember { mutableStateOf(false) }
 
     fun saveIfChanged() {
-        val current = AiConfig(modelId, apiKey, baseUrl)
+        val current = AiConfig(
+            modelId = modelId,
+            apiKey = apiKey,
+            baseUrl = baseUrl,
+            renderDelayMs = renderDelayMs.toIntOrNull() ?: 800
+        )
         AiSettings.save(context, current)
     }
 
@@ -132,12 +138,21 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth()
             )
 
-            Spacer(modifier = Modifier.height(32.dp))
+            Spacer(modifier = Modifier.height(16.dp))
 
-            Text(
-                text = "这些参数将用于调用大模型进行广告跳过决策。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+            OutlinedTextField(
+                value = renderDelayMs,
+                onValueChange = {
+                    if (it.all { c -> c.isDigit() } && it.length <= 5) {
+                        renderDelayMs = it
+                        saveIfChanged()
+                    }
+                },
+                label = { Text("Detect Delay(mills)") },
+                placeholder = { Text("800") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.fillMaxWidth()
             )
         }
     }

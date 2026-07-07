@@ -9,7 +9,8 @@ import android.content.SharedPreferences
 data class AiConfig(
     val modelId: String = "",
     val apiKey: String = "",
-    val baseUrl: String = ""
+    val baseUrl: String = "",
+    val renderDelayMs: Int = 800
 )
 
 /**
@@ -21,6 +22,7 @@ object AiSettings {
     private const val KEY_MODEL_ID = "model_id"
     private const val KEY_API_KEY = "api_key"
     private const val KEY_BASE_URL = "base_url"
+    private const val KEY_RENDER_DELAY_MS = "render_delay_ms"
 
     private fun prefs(context: Context): SharedPreferences =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -31,6 +33,7 @@ object AiSettings {
             putString(KEY_MODEL_ID, config.modelId)
             putString(KEY_API_KEY, config.apiKey)
             putString(KEY_BASE_URL, config.baseUrl)
+            putInt(KEY_RENDER_DELAY_MS, config.renderDelayMs)
             apply()
         }
     }
@@ -41,7 +44,8 @@ object AiSettings {
         return AiConfig(
             modelId = p.getString(KEY_MODEL_ID, BuildConfig.AITIAO_MODEL_ID) ?: BuildConfig.AITIAO_MODEL_ID,
             apiKey = p.getString(KEY_API_KEY, BuildConfig.AITIAO_API_KEY) ?: BuildConfig.AITIAO_API_KEY,
-            baseUrl = p.getString(KEY_BASE_URL, BuildConfig.AITIAO_BASE_URL) ?: BuildConfig.AITIAO_BASE_URL
+            baseUrl = p.getString(KEY_BASE_URL, BuildConfig.AITIAO_BASE_URL) ?: BuildConfig.AITIAO_BASE_URL,
+            renderDelayMs = p.getInt(KEY_RENDER_DELAY_MS, 800)
         )
     }
 }
