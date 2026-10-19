@@ -2,6 +2,7 @@ package me.geekabe.aitiao
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.getValue
@@ -26,6 +27,11 @@ class MainActivity : ComponentActivity() {
                 var currentScreen by remember { mutableStateOf(Screen.APP_LIST) }
                 var selectedPackageName by remember { mutableStateOf("") }
                 var selectedAppName by remember { mutableStateOf("") }
+
+                // 子页面接管系统返回：边缘滑动/返回键回到应用列表，而不是直接退到桌面
+                BackHandler(enabled = currentScreen != Screen.APP_LIST) {
+                    currentScreen = Screen.APP_LIST
+                }
 
                 // 屏幕路由
                 when (currentScreen) {
