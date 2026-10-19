@@ -19,7 +19,9 @@ data class AdPageFingerprint(
     val versionCode: Long,
     val screenWidth: Int,
     val screenHeight: Int,
-    val densityDpi: Int
+    val densityDpi: Int,
+    /** 这条缓存是否来自大模型确认（而不是猜测） */
+    val confirmedByAi: Boolean
 )
 
 /**
@@ -36,7 +38,7 @@ object ViewFingerprintCache {
 
     private const val TAG = "FingerprintCache"
     private const val PREFS_NAME = "ad_fingerprints"
-    private const val SCHEMA_VERSION = 2
+    private const val SCHEMA_VERSION = 3
     private const val MAX_PER_PACKAGE = 50
     private const val POSITIVE_TTL_MS = 30L * 24 * 60 * 60 * 1000
     private const val NEGATIVE_TTL_MS = 24L * 60 * 60 * 1000
@@ -91,7 +93,8 @@ object ViewFingerprintCache {
         isAdPage: Boolean,
         skipXRatio: Float,
         skipYRatio: Float,
-        context: Context
+        context: Context,
+        confirmedByAi: Boolean
     ) {
         if (fingerprint.isBlank()) return
 
@@ -114,7 +117,8 @@ object ViewFingerprintCache {
                 versionCode = appVersionCode(context, packageName),
                 screenWidth = dm.widthPixels,
                 screenHeight = dm.heightPixels,
-                densityDpi = dm.densityDpi
+                densityDpi = dm.densityDpi,
+                confirmedByAi = confirmedByAi
             )
         )
 
@@ -281,6 +285,7 @@ object ViewFingerprintCache {
             put("screenWidth", f.screenWidth)
             put("screenHeight", f.screenHeight)
             put("densityDpi", f.densityDpi)
+            put("confirmedByAi", f.confirmedByAi)
         }
     }
 
@@ -306,7 +311,8 @@ object ViewFingerprintCache {
             versionCode = json.optLong("versionCode", 0L),
             screenWidth = json.optInt("screenWidth", 0),
             screenHeight = json.optInt("screenHeight", 0),
-            densityDpi = json.optInt("densityDpi", 0)
+            densityDpi = json.optInt("densityDpi", 0),
+            confirmedByAi = json.optBoolean("confirmedByAi", false)
         )
     }
 }

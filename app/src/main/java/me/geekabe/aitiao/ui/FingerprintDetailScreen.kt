@@ -267,6 +267,15 @@ private fun FingerprintCard(
                     modifier = Modifier
                         .padding(horizontal = 6.dp, vertical = 2.dp)
                 )
+                if (fingerprint.confirmedByAi) {
+                    Text(
+                        text = "AI确认",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.tertiary,
+                        modifier = Modifier
+                            .padding(horizontal = 4.dp, vertical = 2.dp)
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(8.dp))

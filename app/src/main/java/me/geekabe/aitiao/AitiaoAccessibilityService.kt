@@ -14,6 +14,10 @@ import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Rect
 import android.os.Build
@@ -35,6 +39,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import java.lang.ref.WeakReference
 import kotlin.coroutines.resume
 
@@ -114,6 +119,7 @@ class AitiaoAccessibilityService : AccessibilityService() {
     private var windowGeneration: Long = 0L
     private var detectionJob: Job? = null
     private var lastClickAt: Long = 0L
+    private val confirmationInFlight: MutableSet<String> = mutableSetOf()
     private val stopReceiver = StopReceiver()
     private var skipCount: Int = 0
 
@@ -154,6 +160,7 @@ class AitiaoAccessibilityService : AccessibilityService() {
         windowGeneration++
         detectionJob?.cancel()
         detectionJob = null
+        confirmationInFlight.clear()
         try {
             unregisterReceiver(stopReceiver)
         } catch (_: Exception) {
@@ -373,46 +380,60 @@ class AitiaoAccessibilityService : AccessibilityService() {
 
             val fingerprint = ViewFingerprintCache.collectFingerprint(root, activityClass)
             val aiKey = fingerprint.ifBlank { "__blank__" }
-
-            // Step 1: 无障碍文本优先，命中就不需要截图和网络
-            findSkipNode(root)?.let { node ->
-                LogCollector.i(TAG, "文本命中跳过按钮")
-                if (clickNode(node, packageName, activityClass, fingerprint)) return
+            val cached = if (fingerprint.isNotBlank()) {
+                ViewFingerprintCache.get(packageName, fingerprint, this)
+            } else {
+                null
             }
 
-            // Step 2: 指纹缓存
-            if (fingerprint.isNotBlank()) {
-                val cached = ViewFingerprintCache.get(packageName, fingerprint, this)
-                if (cached != null) {
-                    if (cached.isAdPage) {
-                        val dm = resources.displayMetrics
-                        LogCollector.i(
-                            TAG,
-                            "命中广告缓存: (${cached.skipXRatio}, ${cached.skipYRatio})"
+            // Step 1: 负缓存优先。AI 已经判过非广告的页面，不再做文本点击，
+            // 否则“AI 结果为准”不生效。
+            if (cached != null && !cached.isAdPage) {
+                LogCollector.i(TAG, "命中非广告缓存，跳过文本判断")
+                return
+            }
+
+            // Step 2: 正缓存优先。缓存是 AI 确认过的，避免文本误点后 AI 修正了坐标、
+            // 下次又被文本点回错误位置。
+            if (cached != null && cached.isAdPage) {
+                val dm = resources.displayMetrics
+                LogCollector.i(
+                    TAG,
+                    "命中广告缓存: (${cached.skipXRatio}, ${cached.skipYRatio})"
+                )
+                if (clickRatio(
+                        cached.skipXRatio,
+                        cached.skipYRatio,
+                        dm.widthPixels,
+                        dm.heightPixels,
+                        packageName,
+                        activityClass,
+                        fingerprint
+                    )
+                ) {
+                    return
+                }
+                LogCollector.w(TAG, "缓存点击未成功，继续走实时识别")
+            } else {
+                // Step 3: 没有缓存时才文本优先；点击后后台 AI 确认并写缓存。
+                val node = findSkipNode(root)
+                if (node != null) {
+                    LogCollector.i(TAG, "文本命中跳过按钮")
+                    if (handleTextClick(
+                            node,
+                            packageName,
+                            activityClass,
+                            fingerprint,
+                            gen,
+                            config
                         )
-                        if (clickRatio(
-                                cached.skipXRatio,
-                                cached.skipYRatio,
-                                dm.widthPixels,
-                                dm.heightPixels,
-                                packageName,
-                                activityClass,
-                                fingerprint
-                            )
-                        ) {
-                            return
-                        }
-                        // 不在这里删缓存：可能是被双击保护拦下，或页面刚好在变化；
-                        // 后续 AI 识别会用新结果覆盖它
-                        LogCollector.w(TAG, "缓存点击未成功，继续走实时识别")
-                    } else {
-                        LogCollector.i(TAG, "命中非广告缓存")
+                    ) {
                         return
                     }
                 }
             }
 
-            // Step 3: AI 识别（同一指纹只尝试一次）
+            // Step 4: AI 首点（无文本、无缓存，或缓存点击失败）
             if (aiAttemptedFor == aiKey) continue
             if (config.apiKey.isBlank() || config.modelId.isBlank()) {
                 LogCollector.w(TAG, "AI 配置未完成，跳过识别")
@@ -447,14 +468,21 @@ class AitiaoAccessibilityService : AccessibilityService() {
             if (!result.isAd) {
                 if (fingerprint.isNotBlank()) {
                     ViewFingerprintCache.put(
-                        packageName, fingerprint, false, 0f, 0f, this
+                        packageName, fingerprint, false, 0f, 0f, this,
+                        confirmedByAi = true
                     )
                     LogCollector.i(TAG, "AI 判断非广告，写入负缓存")
                 }
                 continue
             }
             if (!result.hasSkip) {
-                LogCollector.i(TAG, "AI 判断是广告，但未找到跳过按钮")
+                if (fingerprint.isNotBlank()) {
+                    ViewFingerprintCache.put(
+                        packageName, fingerprint, false, 0f, 0f, this,
+                        confirmedByAi = true
+                    )
+                }
+                LogCollector.i(TAG, "AI 判断是广告但未找到跳过按钮，写入负缓存")
                 continue
             }
             if (result.skipXRatio in 0.3f..0.7f && result.skipYRatio in 0.3f..0.7f) {
@@ -483,9 +511,9 @@ class AitiaoAccessibilityService : AccessibilityService() {
                         true,
                         (x / dm.widthPixels).coerceIn(0f, 1f),
                         (y / dm.heightPixels).coerceIn(0f, 1f),
-                        this
+                        this,
+                        confirmedByAi = true
                     )
-                    schedulePostClickCheck(packageName, activityClass, fingerprint)
                 }
                 return
             }
@@ -499,7 +527,7 @@ class AitiaoAccessibilityService : AccessibilityService() {
     // ─── 文本节点查找 ────────────────────────────────────────────
 
     /**
-     * 在顶部/底部区域找"跳过/skip/关闭"节点，避免内容页正文里的同名文字误命中。
+     * 在顶部/底部区域找"跳过/skip"节点，避免内容页正文里的同名文字误命中。
      */
     private fun findSkipNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         val dm = resources.displayMetrics
@@ -509,7 +537,8 @@ class AitiaoAccessibilityService : AccessibilityService() {
         for (text in SKIP_TEXTS) {
             val nodes = try {
                 root.findAccessibilityNodeInfosByText(text)
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                LogCollector.w(TAG, "查找 '$text' 异常: ${e.message}")
                 null
             } ?: continue
 
@@ -621,7 +650,7 @@ class AitiaoAccessibilityService : AccessibilityService() {
         else -> "UNKNOWN($code)"
     }
 
-    /** 缩放到 1dp=1px，减少上传体积；尺寸相同时直接返回原 bitmap */
+    /** 缩放到 1dp=1px，减少上传体积 */
     private fun scaleForUpload(bitmap: Bitmap): Bitmap {
         val density = resources.displayMetrics.density
         val width = (bitmap.width / density).toInt().coerceAtLeast(1)
@@ -666,46 +695,315 @@ class AitiaoAccessibilityService : AccessibilityService() {
         return true
     }
 
-    private fun clickNode(
+    /**
+     * 文本命中后的点击路径。
+     *
+     * 如果 AI 可用且页面还没有缓存：点击前截图，点击后把带红圈的截图交给后台 AI 确认，
+     * AI 结果作为写缓存的依据。截图失败则直接点击，但不在没有确认的情况下写缓存。
+     */
+    private suspend fun handleTextClick(
         node: AccessibilityNodeInfo,
         packageName: String,
         activityClass: String,
-        fingerprint: String
+        fingerprint: String,
+        gen: Long,
+        config: AiConfig
     ): Boolean {
-        val rect = Rect()
-        node.getBoundsInScreen(rect)
-        if (rect.width() <= 0 || rect.height() <= 0) return false
+        val clickedText = node.text?.toString()?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?: node.contentDescription?.toString()?.trim().orEmpty()
 
-        val x = rect.centerX().toFloat()
-        val y = rect.centerY().toFloat()
+        val aiEnabled = config.apiKey.isNotBlank() && config.modelId.isNotBlank()
+        if (!aiEnabled || fingerprint.isBlank()) {
+            return clickTextNode(node, packageName, activityClass, fingerprint, gen)
+        }
 
-        val clickable = clickableAncestor(node)
-        // 优先用坐标手势（更贴近用户真实点击），失败再退回节点 ACTION_CLICK。
-        // 注意必须用 || 的短路求值，避免手势成功后又执行一次 ACTION_CLICK。
-        val clicked = performClick(x, y) || (
-            SystemClock.elapsedRealtime() - lastClickAt >= MIN_CLICK_INTERVAL_MS &&
-                try {
-                    clickable?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
-                } catch (_: Exception) {
-                    false
-                }
-            )
-        if (!clicked) return false
+        // 点击前截图，保证 AI 看到的是被点击的那一页
+        val screenshot = takeScreenshotAsync()
+        if (screenshot == null) {
+            LogCollector.w(TAG, "确认截图失败，直接点击（不写缓存）")
+            return clickTextNode(node, packageName, activityClass, fingerprint, gen)
+        }
+
+        // 截图有延迟，点击前重新确认节点和页面都还在
+        if (!node.refresh() || !node.isVisibleToUser) {
+            LogCollector.w(TAG, "截图后节点已失效，放弃点击")
+            screenshot.bitmap.recycle()
+            return false
+        }
+        if (!isStillSameScreen(packageName, activityClass, fingerprint, gen, screenshot)) {
+            LogCollector.w(TAG, "截图后页面已变化，放弃点击")
+            screenshot.bitmap.recycle()
+            return false
+        }
+
+        val target = resolveClickTarget(node) ?: run {
+            screenshot.bitmap.recycle()
+            return false
+        }
+
+        if (!clickTarget(target)) {
+            screenshot.bitmap.recycle()
+            return false
+        }
+        onSkipSuccess()
+
+        val display = resources.displayMetrics
+        startConfirmation(
+            packageName = packageName,
+            fingerprint = fingerprint,
+            screenshot = screenshot,
+            ringRatioX = (target.x / screenshot.width).coerceIn(0f, 1f),
+            ringRatioY = (target.y / screenshot.height).coerceIn(0f, 1f),
+            cacheRatioX = (target.x / display.widthPixels).coerceIn(0f, 1f),
+            cacheRatioY = (target.y / display.heightPixels).coerceIn(0f, 1f),
+            clickedText = clickedText
+        )
+        return true
+    }
+
+    /** 不做 AI 确认的文本点击：没有 AI 配置、没有指纹或截图失败时使用。 */
+    private fun clickTextNode(
+        node: AccessibilityNodeInfo,
+        packageName: String,
+        activityClass: String,
+        fingerprint: String,
+        gen: Long
+    ): Boolean {
+        if (gen != windowGeneration || currentForegroundPackage != packageName) return false
+        if (!node.refresh() || !node.isVisibleToUser) return false
+
+        val root = rootInActiveWindow ?: return false
+        if (root.packageName?.toString() != packageName) return false
+        if (fingerprint.isNotBlank()) {
+            val nowFingerprint = ViewFingerprintCache.collectFingerprint(root, activityClass)
+            if (nowFingerprint != fingerprint) return false
+        }
+
+        val target = resolveClickTarget(node) ?: return false
+        if (!clickTarget(target)) return false
 
         onSkipSuccess()
-        if (fingerprint.isNotBlank()) {
-            val dm = resources.displayMetrics
-            ViewFingerprintCache.put(
-                packageName,
-                fingerprint,
-                true,
-                (x / dm.widthPixels).coerceIn(0f, 1f),
-                (y / dm.heightPixels).coerceIn(0f, 1f),
-                this
-            )
-            schedulePostClickCheck(packageName, activityClass, fingerprint)
-        }
         return true
+    }
+
+    private data class ClickTarget(
+        val x: Float,
+        val y: Float,
+        val clickable: AccessibilityNodeInfo?
+    )
+
+    private fun resolveClickTarget(node: AccessibilityNodeInfo): ClickTarget? {
+        val rect = Rect()
+        node.getBoundsInScreen(rect)
+        if (rect.width() <= 0 || rect.height() <= 0) return null
+        return ClickTarget(
+            x = rect.centerX().toFloat(),
+            y = rect.centerY().toFloat(),
+            clickable = clickableAncestor(node)
+        )
+    }
+
+    private fun clickTarget(target: ClickTarget): Boolean {
+        if (performClick(target.x, target.y)) return true
+
+        if (SystemClock.elapsedRealtime() - lastClickAt < MIN_CLICK_INTERVAL_MS) {
+            return false
+        }
+        return try {
+            target.clickable?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * 后台 AI 确认：把带红圈的点击前截图发给模型，用模型结果写缓存。
+     * 独立协程，不跟随 detectionJob 取消。
+     */
+    private fun startConfirmation(
+        packageName: String,
+        fingerprint: String,
+        screenshot: Screenshot,
+        ringRatioX: Float,
+        ringRatioY: Float,
+        cacheRatioX: Float,
+        cacheRatioY: Float,
+        clickedText: String
+    ) {
+        if (!confirmationInFlight.add(fingerprint)) {
+            screenshot.bitmap.recycle()
+            return
+        }
+
+        serviceScope.launch {
+            var upload: Bitmap? = null
+            try {
+                val config = AiSettings.load(this@AitiaoAccessibilityService)
+                upload = withContext(Dispatchers.Default) {
+                    prepareConfirmationBitmap(screenshot, ringRatioX, ringRatioY)
+                }
+                if (upload == null) {
+                    LogCollector.w(TAG, "确认截图准备失败")
+                    return@launch
+                }
+
+                val result = withContext(Dispatchers.IO) {
+                    AdDetector.confirmAd(upload, config, clickedText)
+                }
+                applyConfirmResult(
+                    packageName = packageName,
+                    fingerprint = fingerprint,
+                    clickRatioX = cacheRatioX,
+                    clickRatioY = cacheRatioY,
+                    screenshotWidth = screenshot.width,
+                    screenshotHeight = screenshot.height,
+                    result = result
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                LogCollector.e(TAG, "AI 确认异常: ${e.message}")
+            } finally {
+                upload?.recycle()
+                screenshot.bitmap.recycle()
+                confirmationInFlight.remove(fingerprint)
+            }
+        }
+    }
+
+    /** 把点击前截图缩放到 1dp=1px，并在点击位置画红圈。 */
+    private fun prepareConfirmationBitmap(
+        screenshot: Screenshot,
+        ringRatioX: Float,
+        ringRatioY: Float
+    ): Bitmap? {
+        // HardwareBitmap 不支持 getPixels，也不能直接画到软件 Canvas；
+        // 用 JPEG 编解码转换成软件位图，再缩放、画红圈。
+        val source = if (screenshot.bitmap.config == Bitmap.Config.HARDWARE) {
+            try {
+                val bytes = ByteArrayOutputStream()
+                if (!screenshot.bitmap.compress(Bitmap.CompressFormat.JPEG, 90, bytes)) {
+                    LogCollector.w(TAG, "确认截图压缩失败")
+                    return null
+                }
+                val data = bytes.toByteArray()
+                BitmapFactory.decodeByteArray(data, 0, data.size)
+            } catch (e: Exception) {
+                LogCollector.e(TAG, "确认截图转换软件位图失败: ${e.message}")
+                null
+            }
+        } else {
+            screenshot.bitmap
+        } ?: return null
+
+        return try {
+            val density = resources.displayMetrics.density
+            val width = (screenshot.width / density).toInt().coerceAtLeast(1)
+            val height = (screenshot.height / density).toInt().coerceAtLeast(1)
+            val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(output)
+
+            val bitmapPaint = Paint().apply {
+                isFilterBitmap = true
+                isDither = true
+            }
+            canvas.drawBitmap(
+                source,
+                null,
+                Rect(0, 0, width, height),
+                bitmapPaint
+            )
+
+            val cx = ringRatioX * width
+            val cy = ringRatioY * height
+            val radius = 36f.coerceAtMost(minOf(width, height) / 4f)
+
+            val whiteRing = Paint().apply {
+                color = Color.WHITE
+                style = Paint.Style.STROKE
+                strokeWidth = 8f
+                isAntiAlias = true
+            }
+            val redRing = Paint().apply {
+                color = Color.RED
+                style = Paint.Style.STROKE
+                strokeWidth = 4f
+                isAntiAlias = true
+            }
+            canvas.drawCircle(cx, cy, radius, whiteRing)
+            canvas.drawCircle(cx, cy, radius, redRing)
+            output
+        } catch (e: Exception) {
+            LogCollector.e(TAG, "绘制确认红圈失败: ${e.message}")
+            null
+        } finally {
+            if (source !== screenshot.bitmap) source.recycle()
+        }
+    }
+
+    /** 用 AI 确认结果写缓存；AI 没确认或失败时不写。 */
+    private fun applyConfirmResult(
+        packageName: String,
+        fingerprint: String,
+        clickRatioX: Float,
+        clickRatioY: Float,
+        screenshotWidth: Int,
+        screenshotHeight: Int,
+        result: AdConfirmResult
+    ) {
+        if (result.error != null) {
+            LogCollector.w(TAG, "AI 确认失败: ${result.error}")
+            return
+        }
+
+        val display = resources.displayMetrics
+        val rotated = (screenshotWidth > screenshotHeight) !=
+            (display.widthPixels > display.heightPixels)
+        if (rotated) {
+            LogCollector.w(TAG, "AI 确认期间屏幕旋转，放弃写缓存")
+            return
+        }
+
+        if (!result.isAd) {
+            ViewFingerprintCache.put(
+                packageName, fingerprint, false, 0f, 0f, this,
+                confirmedByAi = true
+            )
+            LogCollector.i(TAG, "AI 确认非广告，写入负缓存")
+            return
+        }
+
+        if (result.hasSkip) {
+            val absX = result.skipXRatio * screenshotWidth
+            val absY = result.skipYRatio * screenshotHeight
+            val ratioX = (absX / display.widthPixels).coerceIn(0f, 1f)
+            val ratioY = (absY / display.heightPixels).coerceIn(0f, 1f)
+            if (!result.clickedIsSkip) {
+                LogCollector.w(TAG, "AI 确认红圈不是跳过按钮，改用 AI 坐标写缓存")
+            }
+            ViewFingerprintCache.put(
+                packageName, fingerprint, true, ratioX, ratioY, this,
+                confirmedByAi = true
+            )
+            LogCollector.i(TAG, "AI 确认是广告，写入正缓存")
+            return
+        }
+
+        if (result.clickedIsSkip) {
+            ViewFingerprintCache.put(
+                packageName, fingerprint, true, clickRatioX, clickRatioY, this,
+                confirmedByAi = true
+            )
+            LogCollector.i(TAG, "AI 确认红圈是跳过按钮，用点击点写入正缓存")
+            return
+        }
+
+        ViewFingerprintCache.put(
+            packageName, fingerprint, false, 0f, 0f, this,
+            confirmedByAi = true
+        )
+        LogCollector.i(TAG, "AI 确认没有可用的跳过按钮，写入负缓存")
     }
 
     private fun clickRatio(

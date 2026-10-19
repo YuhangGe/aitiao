@@ -119,4 +119,78 @@ class AdDetectorTest {
         assertFalse(result.isAd)
         assertNotNull(result.error)
     }
+
+    @Test
+    fun confirmParsesClickedSkip() {
+        val result = AdDetector.extractConfirmResultJson(
+            """{"is_ad":true,"clicked_is_skip":true,"has_skip":true,"skip_x":0.9,"skip_y":0.1}"""
+        )
+        assertTrue(result.isAd)
+        assertTrue(result.clickedIsSkip)
+        assertTrue(result.hasSkip)
+        assertEquals(0.9f, result.skipXRatio, 0.0001f)
+        assertEquals(0.1f, result.skipYRatio, 0.0001f)
+        assertNull(result.error)
+    }
+
+    @Test
+    fun confirmParsesRealSkipWhenClickedTextWasWrong() {
+        val result = AdDetector.extractConfirmResultJson(
+            """{"is_ad":true,"clicked_is_skip":false,"has_skip":true,"skip_x":0.8,"skip_y":0.9}"""
+        )
+        assertTrue(result.isAd)
+        assertFalse(result.clickedIsSkip)
+        assertTrue(result.hasSkip)
+        assertEquals(0.8f, result.skipXRatio, 0.0001f)
+    }
+
+    @Test
+    fun confirmForcesClickedSkipFalseWhenNotAd() {
+        val result = AdDetector.extractConfirmResultJson(
+            """{"is_ad":false,"clicked_is_skip":true,"has_skip":true,"skip_x":0.9,"skip_y":0.1}"""
+        )
+        assertFalse(result.isAd)
+        assertFalse(result.clickedIsSkip)
+        assertFalse(result.hasSkip)
+    }
+
+    @Test
+    fun confirmAcceptsClickedSkipWithoutCoordinates() {
+        val result = AdDetector.extractConfirmResultJson(
+            """{"is_ad":true,"clicked_is_skip":true,"has_skip":false}"""
+        )
+        assertTrue(result.isAd)
+        assertTrue(result.clickedIsSkip)
+        assertFalse(result.hasSkip)
+    }
+
+    @Test
+    fun confirmRejectsInvalidRealSkipCoordinates() {
+        val result = AdDetector.extractConfirmResultJson(
+            """{"is_ad":true,"clicked_is_skip":false,"has_skip":true,"skip_x":1.5,"skip_y":0.1}"""
+        )
+        assertTrue(result.isAd)
+        assertFalse(result.clickedIsSkip)
+        assertFalse(result.hasSkip)
+        assertNotNull(result.error)
+    }
+
+    @Test
+    fun confirmKeepsClickedSkipWhenRealSkipCoordsInvalid() {
+        val result = AdDetector.extractConfirmResultJson(
+            """{"is_ad":true,"clicked_is_skip":true,"has_skip":true,"skip_x":1.5,"skip_y":0.1}"""
+        )
+        assertTrue(result.isAd)
+        assertTrue(result.clickedIsSkip)
+        assertFalse(result.hasSkip)
+        assertNull(result.error)
+    }
+
+    @Test
+    fun confirmPromptCarriesClickedTextAndSchema() {
+        val prompt = AdDetector.confirmPrompt("跳过")
+        assertTrue(prompt.contains("跳过"))
+        assertTrue(prompt.contains("clicked_is_skip"))
+        assertTrue(prompt.contains("红圈"))
+    }
 }

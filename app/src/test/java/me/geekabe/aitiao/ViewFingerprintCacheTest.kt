@@ -26,7 +26,8 @@ class ViewFingerprintCacheTest {
         versionCode = versionCode,
         screenWidth = width,
         screenHeight = height,
-        densityDpi = densityDpi
+        densityDpi = densityDpi,
+        confirmedByAi = true
     )
 
     @Test
