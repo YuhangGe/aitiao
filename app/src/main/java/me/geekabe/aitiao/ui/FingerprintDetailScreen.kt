@@ -16,6 +16,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -29,6 +30,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -55,11 +57,12 @@ fun FingerprintDetailScreen(
     val context = LocalContext.current
     val fingerprints = remember { mutableStateListOf<AdPageFingerprint>() }
     var showConfirmClear by remember { mutableStateOf(false) }
+    var loading by remember { mutableStateOf(true) }
 
-    // 加载指纹列表
-    if (fingerprints.isEmpty()) {
-        val loaded = ViewFingerprintCache.getAll(packageName, context)
-        fingerprints.addAll(loaded)
+    LaunchedEffect(packageName) {
+        fingerprints.clear()
+        fingerprints.addAll(ViewFingerprintCache.getAll(packageName, context))
+        loading = false
     }
 
     Scaffold(
@@ -108,7 +111,16 @@ fun FingerprintDetailScreen(
             )
         }
     ) { paddingValues ->
-        if (fingerprints.isEmpty()) {
+        if (loading) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(paddingValues),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+            }
+        } else if (fingerprints.isEmpty()) {
             // 空状态
             Box(
                 modifier = Modifier
@@ -160,13 +172,13 @@ fun FingerprintDetailScreen(
 
                 itemsIndexed(
                     items = fingerprints,
-                    key = { _, fp -> fp.viewIdFingerprint }
+                    key = { _, fp -> fp.fingerprint }
                 ) { index, fingerprint ->
                     val dismissState = rememberSwipeToDismissBoxState(
                         confirmValueChange = { dismissValue ->
                             if (dismissValue == SwipeToDismissBoxValue.EndToStart) {
                                 ViewFingerprintCache.removeFingerprint(
-                                    packageName, fingerprint.viewIdFingerprint, context
+                                    packageName, fingerprint.fingerprint, context
                                 )
                                 fingerprints.remove(fingerprint)
                                 true
@@ -261,7 +273,7 @@ private fun FingerprintCard(
 
             // 指纹 ID
             Text(
-                text = fingerprint.viewIdFingerprint.ifBlank { "(空指纹)" },
+                text = fingerprint.fingerprint.ifBlank { "(空指纹)" },
                 style = MaterialTheme.typography.bodySmall,
                 fontFamily = FontFamily.Monospace,
                 color = MaterialTheme.colorScheme.onSurface,
@@ -270,10 +282,10 @@ private fun FingerprintCard(
             )
 
             // 跳过坐标（仅广告页显示）
-            if (fingerprint.isAdPage && (fingerprint.skipX != 0 || fingerprint.skipY != 0)) {
+            if (fingerprint.isAdPage && (fingerprint.skipXRatio != 0f || fingerprint.skipYRatio != 0f)) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "跳过位置: (${fingerprint.skipX}, ${fingerprint.skipY})",
+                    text = "跳过位置: (${(fingerprint.skipXRatio * 100).toInt()}%, ${(fingerprint.skipYRatio * 100).toInt()}%)",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

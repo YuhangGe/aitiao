@@ -9,7 +9,6 @@ appcompat = "1.6.1"
 activityCompose = "1.10.1"
 composeBom = "2025.06.01"
 lifecycleRuntimeCompose = "2.8.7"
-sonner = "0.3.9"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -28,7 +27,6 @@ androidx-compose-material3 = { group = "androidx.compose.material3", name = "mat
 androidx-compose-foundation = { group = "androidx.compose.foundation", name = "foundation" }
 androidx-compose-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended" }
 androidx-lifecycle-runtime-compose = { group = "androidx.lifecycle", name = "lifecycle-runtime-compose", version.ref = "lifecycleRuntimeCompose" }
-sonner = { group = "io.github.dokar3", name = "sonner", version.ref = "sonner" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

@@ -12,17 +12,23 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.SharedPreferences
-import androidx.core.content.ContextCompat
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Path
+import android.graphics.Rect
 import android.os.Build
+import android.os.SystemClock
 import android.provider.Settings
-import android.util.Log
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.Toast
+import androidx.core.content.ContextCompat
+import androidx.core.graphics.scale
+import androidx.core.net.toUri
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -31,16 +37,16 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.lang.ref.WeakReference
 import kotlin.coroutines.resume
-import kotlin.time.Duration.Companion.milliseconds
-import androidx.core.graphics.scale
-import androidx.core.net.toUri
 
 /**
  * 爱跳跳无障碍服务
  *
  * 广告检测流程：
- * 1. View 指纹匹配 → 命中则直接用缓存坐标点击（毫秒级）
- * 2. 指纹未命中 → 截图发给大模型识别 → 识别到广告后点击 + 缓存指纹
+ * 1. 启动窗口内先找无障碍文本（跳过/skip/关闭），命中直接点击
+ * 2. 文本未命中 → 查页面指纹缓存（带版本/分辨率/TTL 校验）
+ * 3. 缓存未命中 → 截图发给大模型识别 → 点击 + 缓存
+ *
+ * 所有点击前都会二次校验前台包、页面指纹和截图时效，避免用户切走后误点。
  */
 class AitiaoAccessibilityService : AccessibilityService() {
 
@@ -50,9 +56,27 @@ class AitiaoAccessibilityService : AccessibilityService() {
         private const val NOTIFICATION_ID = 1
         const val ACTION_STOP_SERVICE = "me.geekabe.aitiao.STOP_SERVICE"
 
-        private var instanceRef: WeakReference<AitiaoAccessibilityService>? = null
+        /** 前台切换的 debounce，避免同一应用快速重启时重复识别 */
+        private const val FOREGROUND_DEBOUNCE_MS = 2_000L
 
-        private const val DEBOUNCE_MS = 5_000L
+        /** 同一应用内 Activity 切换的 debounce，允许 logo → 广告页的二次触发 */
+        private const val ACTIVITY_DEBOUNCE_MS = 300L
+
+        /** 应用进入前台后，只在这个窗口内做广告检测 */
+        private const val LAUNCH_WINDOW_MS = 8_000L
+
+        private const val MAX_DETECT_ATTEMPTS = 8
+        private const val RETRY_DELAY_MS = 400L
+        private const val POST_CLICK_CHECK_MS = 500L
+        private const val MAX_SCREENSHOT_AGE_MS = 2_500L
+        private const val MIN_CLICK_INTERVAL_MS = 800L
+
+        // 文本优先只匹配强广告信号；"关闭"可能出现在内容页弹窗上，交给 AI 兜底
+        private val SKIP_TEXTS = listOf(
+            "跳过", "跳过广告", "skip", "Skip", "SKIP"
+        )
+
+        private var instanceRef: WeakReference<AitiaoAccessibilityService>? = null
 
         fun isEnabled(context: Context): Boolean {
             val enabledServices = Settings.Secure.getString(
@@ -61,7 +85,7 @@ class AitiaoAccessibilityService : AccessibilityService() {
             ) ?: return false
             val serviceName = "${context.packageName}/${AitiaoAccessibilityService::class.java.name}"
             return enabledServices.contains(serviceName) ||
-                   enabledServices.contains(AitiaoAccessibilityService::class.java.name)
+                enabledServices.contains(AitiaoAccessibilityService::class.java.name)
         }
 
         fun openSettingsIntent(): Intent =
@@ -74,30 +98,38 @@ class AitiaoAccessibilityService : AccessibilityService() {
             return pm.isIgnoringBatteryOptimizations(context.packageName)
         }
 
-        fun openBatteryOptimizationIntent(): Intent =
+        fun openBatteryOptimizationIntent(context: Context): Intent =
             Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                data = "package:me.geekabe.aitiao".toUri()
+                data = "package:${context.packageName}".toUri()
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
     }
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var skipPackages: Set<String> = emptySet()
-     private var lastTriggerTime: MutableMap<String, Long> = mutableMapOf()
+    private val lastTriggerTime: MutableMap<String, Long> = mutableMapOf()
     private var currentForegroundPackage: String? = null
+    private var currentActivityClass: String? = null
+    private var foregroundSince: Long = 0L
+    private var windowGeneration: Long = 0L
+    private var detectionJob: Job? = null
+    private var lastClickAt: Long = 0L
     private val stopReceiver = StopReceiver()
     private var skipCount: Int = 0
 
-private val prefsChangeListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+    private val prefsChangeListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
         refreshSkipList()
-        try { updateNotificationAppCount() } catch (_: Exception) {}
+        try {
+            updateNotificationAppCount()
+        } catch (_: Exception) {
+        }
     }
 
     // ─── 停止广播接收器 ──────────────────────────────────────────
 
     /**
      * 接收通知栏"停止"按钮的广播，停止无障碍服务并关闭通知。
-     * 作为嵌套类（非 inner），编译为静态类，系统可通过无参构造函数实例化。
+     * 作为嵌套类（非 inner），编译为静态类。
      */
     class StopReceiver : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -111,12 +143,26 @@ private val prefsChangeListener = SharedPreferences.OnSharedPreferenceChangeList
 
     // ─── 生命周期 ────────────────────────────────────────────────
 
-override fun onServiceConnected() {
+    override fun onServiceConnected() {
         super.onServiceConnected()
         LogCollector.i(TAG, "无障碍服务已连接")
         instanceRef = WeakReference(this)
+        // 重连时重置前台状态，避免第一次事件被当成"同包"而漏检
+        currentForegroundPackage = null
+        currentActivityClass = null
+        foregroundSince = 0L
+        windowGeneration++
+        detectionJob?.cancel()
+        detectionJob = null
+        try {
+            unregisterReceiver(stopReceiver)
+        } catch (_: Exception) {
+        }
         ContextCompat.registerReceiver(
-            this, stopReceiver, IntentFilter(ACTION_STOP_SERVICE), ContextCompat.RECEIVER_NOT_EXPORTED
+            this,
+            stopReceiver,
+            IntentFilter(ACTION_STOP_SERVICE),
+            ContextCompat.RECEIVER_NOT_EXPORTED
         )
         refreshSkipList()
         getSharedPreferences("skip_status", MODE_PRIVATE)
@@ -124,44 +170,75 @@ override fun onServiceConnected() {
         showPersistentNotification()
     }
 
-override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
         if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
 
-        val packageName = event.packageName?.toString() ?: return
-        if (packageName.isBlank()) return
-        if (packageName == this.packageName) return
+        try {
+            val packageName = event.packageName?.toString()
+                ?.takeIf { it.isNotBlank() } ?: return
+            val activityClass = event.className?.toString().orEmpty()
+            val now = SystemClock.elapsedRealtime()
 
-        // 同一应用内的窗口切换忽略，仅在新应用进入前台时处理
-        if (packageName == currentForegroundPackage) return
-        currentForegroundPackage = packageName
+            val foregroundChanged = packageName != currentForegroundPackage
+            val activityChanged = !foregroundChanged &&
+                activityClass.isNotBlank() &&
+                activityClass != currentActivityClass
 
-        if (packageName !in skipPackages) return
+            currentForegroundPackage = packageName
+            currentActivityClass = activityClass
 
-        // 确认目标应用窗口确实处于活跃状态。
-        // TYPE_WINDOW_STATE_CHANGED 没有前后台区分参数，系统可能在切后台时
-        // 发送残留事件（包名仍是目标应用），需通过 rootInActiveWindow 最终确认。
-        if (rootInActiveWindow == null) return
+            if (foregroundChanged) {
+                foregroundSince = now
+                windowGeneration++
+                detectionJob?.cancel()
+                detectionJob = null
+            }
 
-        val now = System.currentTimeMillis()
-        val lastTime = lastTriggerTime[packageName]
-        if (lastTime != null && (now - lastTime) < DEBOUNCE_MS) return
+            // 自己的界面只更新前台状态，避免 A → 爱跳跳 → A 时状态卡在 A
+            if (packageName == this.packageName) return
+            if (packageName !in skipPackages) return
+            if (!foregroundChanged && !activityChanged) return
+            if (now - foregroundSince > LAUNCH_WINDOW_MS) return
 
-        lastTriggerTime[packageName] = now
-        LogCollector.i(TAG, "检测到目标应用启动: $packageName")
+            val last = lastTriggerTime[packageName] ?: 0L
+            val debounce = if (foregroundChanged) {
+                FOREGROUND_DEBOUNCE_MS
+            } else {
+                ACTIVITY_DEBOUNCE_MS
+            }
+            if (now - last < debounce) return
+            lastTriggerTime[packageName] = now
 
-        handleAdSkip(packageName)
+            val gen = windowGeneration
+            detectionJob?.cancel()
+            detectionJob = serviceScope.launch {
+                try {
+                    handleAdSkip(packageName, activityClass, gen)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    LogCollector.e(TAG, "广告检测异常: ${e.message}")
+                }
+            }
+        } catch (e: Exception) {
+            LogCollector.e(TAG, "处理窗口事件异常: ${e.message}")
+        }
     }
 
-override fun onInterrupt() {
+    override fun onInterrupt() {
         LogCollector.w(TAG, "无障碍服务被中断，尝试恢复…")
         refreshSkipList()
         showPersistentNotification()
     }
 
-override fun onDestroy() {
+    override fun onDestroy() {
         super.onDestroy()
-        try { unregisterReceiver(stopReceiver) } catch (_: Exception) {}
+        detectionJob?.cancel()
+        try {
+            unregisterReceiver(stopReceiver)
+        } catch (_: Exception) {
+        }
         getSharedPreferences("skip_status", MODE_PRIVATE)
             .unregisterOnSharedPreferenceChangeListener(prefsChangeListener)
         instanceRef = null
@@ -177,11 +254,13 @@ override fun onDestroy() {
 
     // ─── 常驻通知 ────────────────────────────────────────────────
 
-private fun showPersistentNotification() {
+    private fun showPersistentNotification() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
                 != PackageManager.PERMISSION_GRANTED
-            ) return
+            ) {
+                return
+            }
         }
 
         createNotificationChannel()
@@ -190,15 +269,16 @@ private fun showPersistentNotification() {
         nm.notify(NOTIFICATION_ID, buildNotification())
     }
 
-private fun updateNotificationAppCount() {
+    private fun updateNotificationAppCount() {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.notify(NOTIFICATION_ID, buildNotification())
     }
 
-private fun buildNotification(): Notification {
+    private fun buildNotification(): Notification {
         // 点击通知 → 打开主程序
         val openAppIntent = PendingIntent.getActivity(
-            this, 0,
+            this,
+            0,
             Intent(this, MainActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             },
@@ -210,7 +290,9 @@ private fun buildNotification(): Notification {
             setPackage(packageName)
         }
         val stopPendingIntent = PendingIntent.getBroadcast(
-            this, 0, stopIntent,
+            this,
+            0,
+            stopIntent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
@@ -222,7 +304,10 @@ private fun buildNotification(): Notification {
             .setContentIntent(openAppIntent)
             .addAction(
                 Notification.Action.Builder(
-                    android.graphics.drawable.Icon.createWithResource(this, android.R.drawable.ic_media_pause),
+                    android.graphics.drawable.Icon.createWithResource(
+                        this,
+                        android.R.drawable.ic_media_pause
+                    ),
                     "停止",
                     stopPendingIntent
                 ).build()
@@ -250,154 +335,466 @@ private fun buildNotification(): Notification {
 
     // ─── 跳过列表管理 ───────────────────────────────────────────
 
-private fun refreshSkipList() {
+    private fun refreshSkipList() {
         val prefs = getSharedPreferences("skip_status", Context.MODE_PRIVATE)
         skipPackages = prefs.all
             .filter { (_, value) -> value == true }
             .keys
         LogCollector.i(TAG, "跳过列表已刷新: ${skipPackages.size} 个应用")
-        try { updateNotificationAppCount() } catch (_: Exception) {}
+        try {
+            updateNotificationAppCount()
+        } catch (_: Exception) {
+        }
     }
 
     // ─── 广告跳过主流程 ──────────────────────────────────────────
 
-private fun handleAdSkip(packageName: String) {
+    private suspend fun handleAdSkip(
+        packageName: String,
+        activityClass: String,
+        gen: Long
+    ) {
         if (packageName !in skipPackages) return
 
-        serviceScope.launch {
-            // 等待页面渲染完成
-            val config = AiSettings.load(this@AitiaoAccessibilityService)
-            delay(config.renderDelayMs.milliseconds)
-            if (packageName !in skipPackages) return@launch
+        val config = AiSettings.load(this)
+        var aiAttemptedFor: String? = null
 
-            // Step 1: 检查 View 指纹缓存
-            val root = rootInActiveWindow
-            if (root == null) {
-                LogCollector.w(TAG, "rootInActiveWindow not found!")
-                return@launch
+        for (attempt in 0 until MAX_DETECT_ATTEMPTS) {
+            // 首次等待页面渲染，后续快速重试
+            delay(if (attempt == 0) config.renderDelayMs.toLong() else RETRY_DELAY_MS)
+
+            if (gen != windowGeneration) return
+            if (currentForegroundPackage != packageName) return
+            if (packageName !in skipPackages) return
+            if (SystemClock.elapsedRealtime() - foregroundSince > LAUNCH_WINDOW_MS) return
+
+            val root = rootInActiveWindow ?: continue
+            if (root.packageName?.toString() != packageName) continue
+
+            val fingerprint = ViewFingerprintCache.collectFingerprint(root, activityClass)
+            val aiKey = fingerprint.ifBlank { "__blank__" }
+
+            // Step 1: 无障碍文本优先，命中就不需要截图和网络
+            findSkipNode(root)?.let { node ->
+                LogCollector.i(TAG, "文本命中跳过按钮")
+                if (clickNode(node, packageName, activityClass, fingerprint)) return
             }
 
-            val rootViewIdFingerprint = ViewFingerprintCache.collectViewIdFingerprint(root)
-            val cached = ViewFingerprintCache.get(packageName, rootViewIdFingerprint, this@AitiaoAccessibilityService)
-            if (cached != null) {
-                if (cached.isAdPage) {
-                    LogCollector.i(TAG, "找到缓存，跳过按钮位置: (${cached.skipX}, ${cached.skipY})")
-                    performClick(cached.skipX.toFloat(), cached.skipY.toFloat())
-                } else {
-                    LogCollector.i(TAG, "找到缓存，非广告页。")
+            // Step 2: 指纹缓存
+            if (fingerprint.isNotBlank()) {
+                val cached = ViewFingerprintCache.get(packageName, fingerprint, this)
+                if (cached != null) {
+                    if (cached.isAdPage) {
+                        val dm = resources.displayMetrics
+                        LogCollector.i(
+                            TAG,
+                            "命中广告缓存: (${cached.skipXRatio}, ${cached.skipYRatio})"
+                        )
+                        if (clickRatio(
+                                cached.skipXRatio,
+                                cached.skipYRatio,
+                                dm.widthPixels,
+                                dm.heightPixels,
+                                packageName,
+                                activityClass,
+                                fingerprint
+                            )
+                        ) {
+                            return
+                        }
+                        // 不在这里删缓存：可能是被双击保护拦下，或页面刚好在变化；
+                        // 后续 AI 识别会用新结果覆盖它
+                        LogCollector.w(TAG, "缓存点击未成功，继续走实时识别")
+                    } else {
+                        LogCollector.i(TAG, "命中非广告缓存")
+                        return
+                    }
                 }
-                return@launch
             }
 
-            // Step 2: 无缓存 → 截图 + 大模型识别
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                LogCollector.w(TAG, "当前系统版本不支持无障碍截图（需要 Android 14+）")
-                return@launch
-            }
-
+            // Step 3: AI 识别（同一指纹只尝试一次）
+            if (aiAttemptedFor == aiKey) continue
             if (config.apiKey.isBlank() || config.modelId.isBlank()) {
                 LogCollector.w(TAG, "AI 配置未完成，跳过识别")
-                return@launch
+                return
             }
 
-            LogCollector.i(TAG, "无缓存指纹，回退到 AI 识别…")
+            LogCollector.i(TAG, "无文本/缓存，回退到 AI 识别…")
+            val screenshot = takeScreenshotAsync() ?: continue
+            aiAttemptedFor = aiKey
 
-            val bitmap = takeScreenshotAsync() ?: run {
-                Log.e(TAG, "截图失败或返回 null")
-                return@launch
+            val scaled = try {
+                scaleForUpload(screenshot.bitmap)
+            } catch (e: Exception) {
+                screenshot.bitmap.recycle()
+                LogCollector.e(TAG, "截图缩放失败: ${e.message}")
+                continue
             }
 
-            processAIResult(bitmap, config, packageName, rootViewIdFingerprint)
-        }
-    }
-
-    /** 将截图回调转换为 suspend 函数 */
-    private suspend fun takeScreenshotAsync(): Bitmap? {
-        return suspendCancellableCoroutine { continuation ->
-            takeScreenshot(
-                0,
-                mainExecutor,
-                object : TakeScreenshotCallback {
-                    override fun onSuccess(screenshotResult: ScreenshotResult) {
-                        val bitmap = Bitmap.wrapHardwareBuffer(
-                            screenshotResult.hardwareBuffer,
-                            screenshotResult.colorSpace
-                        )
-                        screenshotResult.hardwareBuffer.close()
-                        continuation.resume(bitmap)
-                    }
-
-                    override fun onFailure(errorCode: Int) {
-                        Log.e(TAG, "截图失败, errorCode=$errorCode")
-                        continuation.resume(null)
-                    }
+            val result = try {
+                withContext(Dispatchers.IO) {
+                    AdDetector.detectAd(scaled, config)
                 }
-            )
-        }
-    }
+            } finally {
+                if (scaled !== screenshot.bitmap) scaled.recycle()
+                screenshot.bitmap.recycle()
+            }
 
-    // ─── AI 识别结果处理 ─────────────────────────────────────────
+            if (result.error != null) {
+                LogCollector.w(TAG, "AI 识别失败: ${result.error}")
+                continue
+            }
+            if (!result.isAd) {
+                if (fingerprint.isNotBlank()) {
+                    ViewFingerprintCache.put(
+                        packageName, fingerprint, false, 0f, 0f, this
+                    )
+                    LogCollector.i(TAG, "AI 判断非广告，写入负缓存")
+                }
+                continue
+            }
+            if (!result.hasSkip) {
+                LogCollector.i(TAG, "AI 判断是广告，但未找到跳过按钮")
+                continue
+            }
+            if (result.skipXRatio in 0.3f..0.7f && result.skipYRatio in 0.3f..0.7f) {
+                LogCollector.w(TAG, "AI 返回的坐标在屏幕中央，拒绝点击")
+                continue
+            }
 
-private suspend fun processAIResult(bitmap: Bitmap, config: AiConfig, packageName: String, rootViewIdFingerprint: String) {
-        LogCollector.i(TAG, "开始 AI 识别…")
+            // 点击前最后确认：前台包、页面指纹、截图时效都没变
+            if (!isStillSameScreen(
+                    packageName, activityClass, fingerprint, gen, screenshot
+                )
+            ) {
+                LogCollector.w(TAG, "AI 返回时页面已变化，放弃本次结果并重试")
+                continue
+            }
 
-        // 获取屏幕参数
-        val density = resources.displayMetrics.density
-        val screenWidth = resources.displayMetrics.widthPixels
-        val screenHeight = resources.displayMetrics.heightPixels
-
-        // 将截图缩放到 1dp=1px，减少上传网络开销，同时让 AI 返回相对坐标
-        val origWidth = bitmap.width
-        val origHeight = bitmap.height
-        val scaledWidth = (origWidth / density).toInt().coerceAtLeast(1)
-        val scaledHeight = (origHeight / density).toInt().coerceAtLeast(1)
-        val scaledBitmap = bitmap.scale(scaledWidth, scaledHeight)
-        bitmap.recycle()
-
-        LogCollector.i(TAG, "截图已缩放: ${origWidth}x${origHeight} → ${scaledWidth}x${scaledHeight} (density=$density)")
-
-        // 网络 IO 切换到后台线程
-        val result = withContext(Dispatchers.IO) {
-            AdDetector.detectAd(scaledBitmap, screenWidth, screenHeight, config)
-        }
-        scaledBitmap.recycle()
-
-        if (result.error != null) {
-            Log.e(TAG, "AI 识别错误: ${result.error}")
+            val x = result.skipXRatio * screenshot.width
+            val y = result.skipYRatio * screenshot.height
+            if (performClick(x, y)) {
+                onSkipSuccess()
+                if (fingerprint.isNotBlank()) {
+                    val dm = resources.displayMetrics
+                    ViewFingerprintCache.put(
+                        packageName,
+                        fingerprint,
+                        true,
+                        (x / dm.widthPixels).coerceIn(0f, 1f),
+                        (y / dm.heightPixels).coerceIn(0f, 1f),
+                        this
+                    )
+                    schedulePostClickCheck(packageName, activityClass, fingerprint)
+                }
+                return
+            }
+            LogCollector.w(TAG, "点击手势派发失败")
             return
         }
 
-        if (result.isAd) {
-            LogCollector.i(TAG, "AI 检测到开屏广告，跳过按钮: (${result.skipX}, ${result.skipY})")
-            val fingerprint = ViewFingerprintCache.fromAd(rootViewIdFingerprint, result.skipX, result.skipY)
-            ViewFingerprintCache.put(packageName, rootViewIdFingerprint, fingerprint, this)
-            performClick(result.skipX.toFloat(), result.skipY.toFloat())
-        } else {
-            LogCollector.i(TAG, "AI 判断非广告页面")
-            val fingerprint = ViewFingerprintCache.fromNoAd(rootViewIdFingerprint)
-            ViewFingerprintCache.put(packageName, rootViewIdFingerprint, fingerprint, this)
+        LogCollector.w(TAG, "本次未识别到可跳过的广告")
+    }
+
+    // ─── 文本节点查找 ────────────────────────────────────────────
+
+    /**
+     * 在顶部/底部区域找"跳过/skip/关闭"节点，避免内容页正文里的同名文字误命中。
+     */
+    private fun findSkipNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val dm = resources.displayMetrics
+        val topLimit = dm.heightPixels * 0.30f
+        val bottomLimit = dm.heightPixels * 0.70f
+
+        for (text in SKIP_TEXTS) {
+            val nodes = try {
+                root.findAccessibilityNodeInfosByText(text)
+            } catch (_: Exception) {
+                null
+            } ?: continue
+
+            for (node in nodes) {
+                if (!node.isVisibleToUser) continue
+                val rect = Rect()
+                node.getBoundsInScreen(rect)
+                if (rect.width() <= 0 || rect.height() <= 0) continue
+
+                val centerY = rect.centerY()
+                if (centerY in topLimit.toInt()..bottomLimit.toInt()) continue
+                return node
+            }
+        }
+        return null
+    }
+
+    private fun clickableAncestor(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        var current: AccessibilityNodeInfo? = node
+        var depth = 0
+        while (depth < 6) {
+            val candidate = current ?: break
+            if (candidate.isClickable) return candidate
+            current = candidate.parent
+            depth++
+        }
+        return null
+    }
+
+    // ─── 截图 ────────────────────────────────────────────────────
+
+    private data class Screenshot(
+        val bitmap: Bitmap,
+        val width: Int,
+        val height: Int,
+        val timestamp: Long
+    )
+
+    /** 将截图回调转换为 suspend 函数 */
+    private suspend fun takeScreenshotAsync(): Screenshot? {
+        return suspendCancellableCoroutine { continuation ->
+            try {
+                takeScreenshot(
+                    0,
+                    mainExecutor,
+                    object : TakeScreenshotCallback {
+                        override fun onSuccess(screenshotResult: ScreenshotResult) {
+                            val buffer = screenshotResult.hardwareBuffer
+                            val bitmap = try {
+                                Bitmap.wrapHardwareBuffer(
+                                    buffer,
+                                    screenshotResult.colorSpace
+                                )
+                            } catch (e: Exception) {
+                                LogCollector.e(TAG, "截图包装失败: ${e.message}")
+                                null
+                            } finally {
+                                buffer.close()
+                            }
+
+                            if (bitmap == null) {
+                                if (continuation.isActive) continuation.resume(null)
+                                return
+                            }
+                            if (!continuation.isActive) {
+                                bitmap.recycle()
+                                return
+                            }
+
+                            val timestamp = if (screenshotResult.timestamp > 0L) {
+                                screenshotResult.timestamp
+                            } else {
+                                SystemClock.uptimeMillis()
+                            }
+                            continuation.resume(
+                                Screenshot(
+                                    bitmap = bitmap,
+                                    width = bitmap.width,
+                                    height = bitmap.height,
+                                    timestamp = timestamp
+                                )
+                            )
+                        }
+
+                        override fun onFailure(errorCode: Int) {
+                            LogCollector.w(
+                                TAG,
+                                "截图失败: ${screenshotErrorMessage(errorCode)}"
+                            )
+                            if (continuation.isActive) continuation.resume(null)
+                        }
+                    }
+                )
+            } catch (e: Exception) {
+                LogCollector.e(TAG, "截图请求异常: ${e.message}")
+                if (continuation.isActive) continuation.resume(null)
+            }
         }
     }
 
-    // ─── 点击手势 ────────────────────────────────────────────────
+    /** 截图 errorCode 对照，方便在应用内日志里定位问题 */
+    private fun screenshotErrorMessage(code: Int): String = when (code) {
+        1 -> "INTERNAL_ERROR"
+        2 -> "NO_ACCESSIBILITY_ACCESS"
+        3 -> "INTERVAL_TIME_SHORT（截图间隔需 >333ms）"
+        4 -> "INVALID_DISPLAY"
+        5 -> "INVALID_WINDOW"
+        6 -> "SECURE_WINDOW（FLAG_SECURE）"
+        else -> "UNKNOWN($code)"
+    }
 
-private fun performClick(x: Float, y: Float) {
+    /** 缩放到 1dp=1px，减少上传体积；尺寸相同时直接返回原 bitmap */
+    private fun scaleForUpload(bitmap: Bitmap): Bitmap {
+        val density = resources.displayMetrics.density
+        val width = (bitmap.width / density).toInt().coerceAtLeast(1)
+        val height = (bitmap.height / density).toInt().coerceAtLeast(1)
+        return if (width == bitmap.width && height == bitmap.height) {
+            bitmap
+        } else {
+            bitmap.scale(width, height)
+        }
+    }
+
+    // ─── 结果校验与点击 ──────────────────────────────────────────
+
+    /**
+     * AI 返回后、点击前再次确认页面没变。
+     */
+    private fun isStillSameScreen(
+        packageName: String,
+        activityClass: String,
+        fingerprint: String,
+        gen: Long,
+        screenshot: Screenshot
+    ): Boolean {
+        if (gen != windowGeneration) return false
+        if (currentForegroundPackage != packageName) return false
+        if (SystemClock.uptimeMillis() - screenshot.timestamp > MAX_SCREENSHOT_AGE_MS) {
+            return false
+        }
+
+        val dm = resources.displayMetrics
+        val rotated = (screenshot.width > screenshot.height) !=
+            (dm.widthPixels > dm.heightPixels)
+        if (rotated) return false
+
+        val root = rootInActiveWindow ?: return false
+        if (root.packageName?.toString() != packageName) return false
+
+        if (fingerprint.isNotBlank()) {
+            val nowFingerprint = ViewFingerprintCache.collectFingerprint(root, activityClass)
+            if (nowFingerprint != fingerprint) return false
+        }
+        return true
+    }
+
+    private fun clickNode(
+        node: AccessibilityNodeInfo,
+        packageName: String,
+        activityClass: String,
+        fingerprint: String
+    ): Boolean {
+        val rect = Rect()
+        node.getBoundsInScreen(rect)
+        if (rect.width() <= 0 || rect.height() <= 0) return false
+
+        val x = rect.centerX().toFloat()
+        val y = rect.centerY().toFloat()
+
+        val clickable = clickableAncestor(node)
+        // 优先用坐标手势（更贴近用户真实点击），失败再退回节点 ACTION_CLICK。
+        // 注意必须用 || 的短路求值，避免手势成功后又执行一次 ACTION_CLICK。
+        val clicked = performClick(x, y) || (
+            SystemClock.elapsedRealtime() - lastClickAt >= MIN_CLICK_INTERVAL_MS &&
+                try {
+                    clickable?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
+                } catch (_: Exception) {
+                    false
+                }
+            )
+        if (!clicked) return false
+
+        onSkipSuccess()
+        if (fingerprint.isNotBlank()) {
+            val dm = resources.displayMetrics
+            ViewFingerprintCache.put(
+                packageName,
+                fingerprint,
+                true,
+                (x / dm.widthPixels).coerceIn(0f, 1f),
+                (y / dm.heightPixels).coerceIn(0f, 1f),
+                this
+            )
+            schedulePostClickCheck(packageName, activityClass, fingerprint)
+        }
+        return true
+    }
+
+    private fun clickRatio(
+        xRatio: Float,
+        yRatio: Float,
+        width: Int,
+        height: Int,
+        packageName: String,
+        activityClass: String,
+        fingerprint: String
+    ): Boolean {
+        if (xRatio <= 0f && yRatio <= 0f) return false
+        val x = xRatio * width
+        val y = yRatio * height
+        if (!performClick(x, y)) return false
+
+        onSkipSuccess()
+        schedulePostClickCheck(packageName, activityClass, fingerprint)
+        return true
+    }
+
+    private fun performClick(x: Float, y: Float): Boolean {
+        if (!x.isFinite() || !y.isFinite()) return false
+
+        val dm = resources.displayMetrics
+        if (x < 0f || y < 0f || x >= dm.widthPixels || y >= dm.heightPixels) {
+            LogCollector.w(TAG, "点击坐标超出屏幕: ($x, $y)")
+            return false
+        }
+
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastClickAt < MIN_CLICK_INTERVAL_MS) {
+            LogCollector.w(TAG, "距离上次点击过近，忽略本次点击")
+            return false
+        }
+
         val path = Path().apply { moveTo(x, y) }
-
         val stroke = GestureDescription.StrokeDescription(path, 0, 100)
-
         val gesture = GestureDescription.Builder()
             .addStroke(stroke)
             .build()
 
-        val dispatched = dispatchGesture(gesture, null, null)
-        if (dispatched) {
-            LogCollector.i(TAG, "已在 ($x, $y) 执行点击")
-            Toast.makeText(this, "已跳过广告", Toast.LENGTH_SHORT).show()
-            skipCount++
-            try { updateNotificationAppCount() } catch (_: Exception) {}
-        } else {
-            Log.e(TAG, "点击手势派发失败")
+        return try {
+            val dispatched = dispatchGesture(gesture, null, null)
+            if (dispatched) {
+                lastClickAt = now
+            } else {
+                LogCollector.e(TAG, "点击手势派发失败")
+            }
+            dispatched
+        } catch (e: Exception) {
+            LogCollector.e(TAG, "点击手势异常: ${e.message}")
+            false
+        }
+    }
+
+    private fun onSkipSuccess() {
+        LogCollector.i(TAG, "已执行跳过点击")
+        Toast.makeText(this, "已跳过广告", Toast.LENGTH_SHORT).show()
+        skipCount++
+        try {
+            updateNotificationAppCount()
+        } catch (_: Exception) {
+        }
+    }
+
+    /**
+     * 点击后 500ms 回查：如果页面指纹没变，说明没跳掉，删掉这条缓存，避免下次继续误点。
+     */
+    private fun schedulePostClickCheck(
+        packageName: String,
+        activityClass: String,
+        fingerprint: String
+    ) {
+        if (fingerprint.isBlank()) return
+
+        serviceScope.launch {
+            delay(POST_CLICK_CHECK_MS)
+            if (currentForegroundPackage != packageName) return@launch
+            if (currentActivityClass != activityClass) return@launch
+
+            val root = rootInActiveWindow ?: return@launch
+            if (root.packageName?.toString() != packageName) return@launch
+
+            val nowFingerprint = ViewFingerprintCache.collectFingerprint(root, activityClass)
+            if (nowFingerprint == fingerprint) {
+                LogCollector.w(TAG, "点击后页面未变化，移除缓存")
+                ViewFingerprintCache.removeFingerprint(packageName, fingerprint, this@AitiaoAccessibilityService)
+            }
         }
     }
 }

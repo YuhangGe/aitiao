@@ -1,15 +1,19 @@
 package me.geekabe.aitiao.ui
 
+import android.Manifest
 import android.app.NotificationManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.os.Build
 import android.provider.Settings
 import android.view.Gravity
 import android.widget.ImageView
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
@@ -63,6 +67,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
 import me.geekabe.aitiao.AiSettings
 import me.geekabe.aitiao.AitiaoAccessibilityService
 import me.geekabe.aitiao.AppInfo
@@ -85,6 +90,12 @@ fun AppListScreen(
     var a11yEnabled by remember { mutableStateOf(false) }
     var batteryOptimized by remember { mutableStateOf(false) }
     var notificationEnabled by remember { mutableStateOf(false) }
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        notificationEnabled = granted
+    }
 
     // 刷新各权限/服务状态
     fun refreshStatus() {
@@ -120,11 +131,12 @@ fun AppListScreen(
             }
         }
         val filter = IntentFilter(AitiaoAccessibilityService.ACTION_STOP_SERVICE)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            context.registerReceiver(stopReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            context.registerReceiver(stopReceiver, filter)
-        }
+        ContextCompat.registerReceiver(
+            context,
+            stopReceiver,
+            filter,
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
 
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
@@ -215,16 +227,30 @@ fun AppListScreen(
                 if (!notificationEnabled) {
                     item(key = "banner_notification") {
                         StatusBanner(
-                            message = "通知权限未开启，应用可能被系统杀死",
+                            message = "通知权限未开启，无法显示常驻通知和停止按钮",
                             actionLabel = "开启",
                             containerColor = MaterialTheme.colorScheme.errorContainer,
                             onClick = {
-                                context.startActivity(
-                                    Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
-                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                        putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
-                                    }
-                                )
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                                    ContextCompat.checkSelfPermission(
+                                        context,
+                                        Manifest.permission.POST_NOTIFICATIONS
+                                    ) != PackageManager.PERMISSION_GRANTED
+                                ) {
+                                    notificationPermissionLauncher.launch(
+                                        Manifest.permission.POST_NOTIFICATIONS
+                                    )
+                                } else {
+                                    context.startActivity(
+                                        Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                            putExtra(
+                                                Settings.EXTRA_APP_PACKAGE,
+                                                context.packageName
+                                            )
+                                        }
+                                    )
+                                }
                             }
                         )
                     }
@@ -234,12 +260,14 @@ fun AppListScreen(
                 if (!batteryOptimized) {
                     item(key = "banner_battery") {
                         StatusBanner(
-                            message = "电池优化未开启，后台运行可能受限",
-                            actionLabel = "开启",
+                            message = "电池优化未关闭，后台运行可能受限",
+                            actionLabel = "去关闭",
                             containerColor = MaterialTheme.colorScheme.errorContainer,
                             onClick = {
                                 context.startActivity(
-                                    AitiaoAccessibilityService.openBatteryOptimizationIntent()
+                                    AitiaoAccessibilityService.openBatteryOptimizationIntent(
+                                        context
+                                    )
                                 )
                             }
                         )

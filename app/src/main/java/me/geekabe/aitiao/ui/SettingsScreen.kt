@@ -55,7 +55,7 @@ fun SettingsScreen(
             modelId = modelId,
             apiKey = apiKey,
             baseUrl = baseUrl,
-            renderDelayMs = renderDelayMs.toIntOrNull() ?: 800
+            renderDelayMs = (renderDelayMs.toIntOrNull() ?: 800).coerceIn(100, 5000)
         )
         AiSettings.save(context, current)
     }
@@ -143,12 +143,12 @@ fun SettingsScreen(
             OutlinedTextField(
                 value = renderDelayMs,
                 onValueChange = {
-                    if (it.all { c -> c.isDigit() } && it.length <= 5) {
+                    if (it.all { c -> c.isDigit() } && it.length <= 4) {
                         renderDelayMs = it
                         saveIfChanged()
                     }
                 },
-                label = { Text("Detect Delay(mills)") },
+                label = { Text("检测延迟（毫秒，100-5000）") },
                 placeholder = { Text("800") },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),

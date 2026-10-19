@@ -106,7 +106,7 @@ fun LogScreen(onBack: () -> Unit) {
             ) {
                 itemsIndexed(
                     items = entries,
-                    key = { _, entry -> entry.timestamp.hashCode() + entries.indexOf(entry) }
+                    key = { _, entry -> entry.id }
                 ) { _, entry ->
                     LogEntryRow(entry)
                     HorizontalDivider(
@@ -122,6 +122,7 @@ fun LogScreen(onBack: () -> Unit) {
 @Composable
 private fun LogEntryRow(entry: LogCollector.Entry) {
     val levelColor = when (entry.level) {
+        "E" -> MaterialTheme.colorScheme.error
         "W" -> MaterialTheme.colorScheme.error
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
