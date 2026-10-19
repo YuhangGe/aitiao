@@ -1,5 +1,6 @@
 package me.geekabe.aitiao
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -102,5 +103,25 @@ class ViewFingerprintCacheTest {
                 fingerprint(now + day), now, 1L, 1080, 2400, 420
             )
         )
+    }
+
+    @Test
+    fun fingerprintHeaderIncludesScreenConfig() {
+        val portrait = ViewFingerprintCache.fingerprintHeader(
+            "MainActivity", 1080, 2400, 420
+        )
+        val landscape = ViewFingerprintCache.fingerprintHeader(
+            "MainActivity", 2400, 1080, 420
+        )
+        val otherDensity = ViewFingerprintCache.fingerprintHeader(
+            "MainActivity", 1080, 2400, 560
+        )
+
+        assertEquals(
+            portrait,
+            ViewFingerprintCache.fingerprintHeader("MainActivity", 1080, 2400, 420)
+        )
+        assertTrue(portrait != landscape)
+        assertTrue(portrait != otherDensity)
     }
 }

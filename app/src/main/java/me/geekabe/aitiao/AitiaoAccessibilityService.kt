@@ -378,7 +378,14 @@ class AitiaoAccessibilityService : AccessibilityService() {
             val root = rootInActiveWindow ?: continue
             if (root.packageName?.toString() != packageName) continue
 
-            val fingerprint = ViewFingerprintCache.collectFingerprint(root, activityClass)
+            val metrics = resources.displayMetrics
+            val fingerprint = ViewFingerprintCache.collectFingerprint(
+                root,
+                activityClass,
+                metrics.widthPixels,
+                metrics.heightPixels,
+                metrics.densityDpi
+            )
             val aiKey = fingerprint.ifBlank { "__blank__" }
             val cached = if (fingerprint.isNotBlank()) {
                 ViewFingerprintCache.get(packageName, fingerprint, this)
@@ -689,7 +696,13 @@ class AitiaoAccessibilityService : AccessibilityService() {
         if (root.packageName?.toString() != packageName) return false
 
         if (fingerprint.isNotBlank()) {
-            val nowFingerprint = ViewFingerprintCache.collectFingerprint(root, activityClass)
+            val nowFingerprint = ViewFingerprintCache.collectFingerprint(
+                root,
+                activityClass,
+                dm.widthPixels,
+                dm.heightPixels,
+                dm.densityDpi
+            )
             if (nowFingerprint != fingerprint) return false
         }
         return true
@@ -776,7 +789,14 @@ class AitiaoAccessibilityService : AccessibilityService() {
         val root = rootInActiveWindow ?: return false
         if (root.packageName?.toString() != packageName) return false
         if (fingerprint.isNotBlank()) {
-            val nowFingerprint = ViewFingerprintCache.collectFingerprint(root, activityClass)
+            val dm = resources.displayMetrics
+            val nowFingerprint = ViewFingerprintCache.collectFingerprint(
+                root,
+                activityClass,
+                dm.widthPixels,
+                dm.heightPixels,
+                dm.densityDpi
+            )
             if (nowFingerprint != fingerprint) return false
         }
 
@@ -1088,7 +1108,14 @@ class AitiaoAccessibilityService : AccessibilityService() {
             val root = rootInActiveWindow ?: return@launch
             if (root.packageName?.toString() != packageName) return@launch
 
-            val nowFingerprint = ViewFingerprintCache.collectFingerprint(root, activityClass)
+            val dm = resources.displayMetrics
+            val nowFingerprint = ViewFingerprintCache.collectFingerprint(
+                root,
+                activityClass,
+                dm.widthPixels,
+                dm.heightPixels,
+                dm.densityDpi
+            )
             if (nowFingerprint == fingerprint) {
                 LogCollector.w(TAG, "点击后页面未变化，移除缓存")
                 ViewFingerprintCache.removeFingerprint(packageName, fingerprint, this@AitiaoAccessibilityService)

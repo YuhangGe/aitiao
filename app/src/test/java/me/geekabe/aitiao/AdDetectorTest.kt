@@ -193,4 +193,44 @@ class AdDetectorTest {
         assertTrue(prompt.contains("clicked_is_skip"))
         assertTrue(prompt.contains("红圈"))
     }
+
+    @Test
+    fun deepSeekRequestDisablesThinking() {
+        val body = AdDetector.buildRequestBody(
+            modelId = "deepseek-flash",
+            prompt = "test",
+            base64Image = "abc",
+            deepSeek = true
+        )
+        assertEquals(1024, body.getInt("max_tokens"))
+        assertEquals("disabled", body.getJSONObject("thinking").getString("type"))
+        assertEquals("json_object", body.getJSONObject("response_format").getString("type"))
+        val content = body.getJSONArray("messages")
+            .getJSONObject(0)
+            .getJSONArray("content")
+        assertEquals(
+            "high",
+            content.getJSONObject(1).getJSONObject("image_url").getString("detail")
+        )
+    }
+
+    @Test
+    fun nonDeepSeekRequestKeepsDefaults() {
+        val body = AdDetector.buildRequestBody(
+            modelId = "hy-vision-2.0-instruct",
+            prompt = "test",
+            base64Image = "abc",
+            deepSeek = false
+        )
+        assertEquals(512, body.getInt("max_tokens"))
+        assertFalse(body.has("thinking"))
+        assertFalse(body.has("response_format"))
+    }
+
+    @Test
+    fun detectsDeepSeekProviderByBaseUrlOrModel() {
+        assertTrue(AdDetector.isDeepSeek("https://api.deepseek.com", "any-model"))
+        assertTrue(AdDetector.isDeepSeek("https://proxy.example/v1", "deepseek-flash"))
+        assertFalse(AdDetector.isDeepSeek("https://api.openai.com/v1", "gpt-4o"))
+    }
 }

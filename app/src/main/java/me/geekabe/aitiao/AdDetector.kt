@@ -163,9 +163,15 @@ object AdDetector {
 
         val base64Image = bitmapToBase64(bitmap)
             ?: return ApiResult.Failure("截图编码失败")
-        val requestBody = buildRequestBody(config.modelId, prompt, base64Image)
-        val baseUrl = config.baseUrl.ifBlank { "https://tokenhub.tencentmaas.com/v1" }
+        val baseUrl = config.baseUrl.ifBlank { "https://api.deepseek.com" }
+        val deepSeek = isDeepSeek(baseUrl, config.modelId)
+        val requestBody = buildRequestBody(config.modelId, prompt, base64Image, deepSeek)
         val apiUrl = "${baseUrl.trimEnd('/')}/chat/completions"
+
+        LogCollector.i(
+            TAG,
+            "AI 请求: model=${config.modelId}, base=$baseUrl, deepseek=$deepSeek"
+        )
 
         var lastError = "大模型无响应"
         for (attempt in 0 until MAX_ATTEMPTS) {
@@ -226,11 +232,16 @@ object AdDetector {
         }
     }
 
+    internal fun isDeepSeek(baseUrl: String, modelId: String): Boolean =
+        baseUrl.contains("api.deepseek.com", ignoreCase = true) ||
+            modelId.startsWith("deepseek", ignoreCase = true)
+
     /** 构建 OpenAI Chat Completions 请求体 JSON */
-    private fun buildRequestBody(
+    internal fun buildRequestBody(
         modelId: String,
         prompt: String,
-        base64Image: String
+        base64Image: String,
+        deepSeek: Boolean
     ): JSONObject {
         val contentArray = JSONArray().apply {
             put(JSONObject().apply {
@@ -241,6 +252,9 @@ object AdDetector {
                 put("type", "image_url")
                 put("image_url", JSONObject().apply {
                     put("url", "data:image/jpeg;base64,$base64Image")
+                    if (deepSeek) {
+                        put("detail", "high")
+                    }
                 })
             })
         }
@@ -253,7 +267,15 @@ object AdDetector {
         return JSONObject().apply {
             put("model", modelId)
             put("messages", JSONArray().apply { put(message) })
-            put("max_tokens", 512)
+            if (deepSeek) {
+                // DeepSeek 默认开启 thinking，会消耗大量 token 且拖慢响应；
+                // 这个任务只需要短 JSON，直接关闭 thinking。
+                put("thinking", JSONObject().put("type", "disabled"))
+                put("max_tokens", 1024)
+                put("response_format", JSONObject().put("type", "json_object"))
+            } else {
+                put("max_tokens", 512)
+            }
             put("temperature", 0.1)
         }
     }

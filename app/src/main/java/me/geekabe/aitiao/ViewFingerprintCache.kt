@@ -38,7 +38,7 @@ object ViewFingerprintCache {
 
     private const val TAG = "FingerprintCache"
     private const val PREFS_NAME = "ad_fingerprints"
-    private const val SCHEMA_VERSION = 3
+    private const val SCHEMA_VERSION = 4
     private const val MAX_PER_PACKAGE = 50
     private const val POSITIVE_TTL_MS = 30L * 24 * 60 * 60 * 1000
     private const val NEGATIVE_TTL_MS = 24L * 60 * 60 * 1000
@@ -181,13 +181,25 @@ object ViewFingerprintCache {
     // ─── 指纹构建 ────────────────────────────────────────────────
 
     /**
-     * 收集页面指纹：Activity 类 + 前 40 个有意义的节点的 class/id/text/desc/位置。
+     * 收集页面指纹：屏幕尺寸/density + Activity 类 + 前 40 个有意义的节点的
+     * class/id/text/desc/位置。
+     *
+     * 屏幕尺寸是指纹的一部分，所以横屏/竖屏、折叠态/展开态会得到不同的 key，
+     * 不会拿一个方向的缓存坐标去点另一个方向。
      *
      * 对数字做归一化（"跳过 3" 与 "跳过 2" 视为同一个指纹），避免倒计时导致
      * "AI 返回时页面已变化"的误判。信号少于 3 个时返回空串，调用方不得缓存。
      */
-    fun collectFingerprint(node: AccessibilityNodeInfo, activityClass: String?): String {
-        val sb = StringBuilder(activityClass ?: "")
+    fun collectFingerprint(
+        node: AccessibilityNodeInfo,
+        activityClass: String?,
+        screenWidth: Int,
+        screenHeight: Int,
+        densityDpi: Int
+    ): String {
+        val sb = StringBuilder(
+            fingerprintHeader(activityClass, screenWidth, screenHeight, densityDpi)
+        )
         var signals = 0
 
         fun walk(current: AccessibilityNodeInfo, depth: Int) {
@@ -218,6 +230,14 @@ object ViewFingerprintCache {
         if (signals < MIN_SIGNALS) return ""
         return sha256(sb.toString()).take(16)
     }
+
+    /** 指纹头：屏幕配置 + Activity，横竖屏/折叠态天然分成不同 key。 */
+    internal fun fingerprintHeader(
+        activityClass: String?,
+        screenWidth: Int,
+        screenHeight: Int,
+        densityDpi: Int
+    ): String = "${screenWidth}x${screenHeight}@${densityDpi}|${activityClass ?: ""}"
 
     private fun normalize(value: String): String =
         value.replace(DIGITS, "#")

@@ -38,6 +38,21 @@ object AiSettings {
         }
     }
 
+    /** 构建时的默认配置（来自 .env / CI），不受用户已保存的设置影响 */
+    fun defaults(): AiConfig = AiConfig(
+        modelId = BuildConfig.AITIAO_MODEL_ID,
+        apiKey = BuildConfig.AITIAO_API_KEY,
+        baseUrl = BuildConfig.AITIAO_BASE_URL,
+        renderDelayMs = 800
+    )
+
+    /** 把设置恢复为构建默认值，用于从旧的 hy 配置切回 .env 里的 DeepSeek */
+    fun resetToDefaults(context: Context): AiConfig {
+        val config = defaults()
+        save(context, config)
+        return config
+    }
+
     /** 读取配置，未保存的字段回退到 BuildConfig 默认值（来自 .env 或 CI） */
     fun load(context: Context): AiConfig {
         val p = prefs(context)

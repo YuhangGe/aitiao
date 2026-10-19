@@ -1,5 +1,6 @@
 package me.geekabe.aitiao.ui
 
+import android.widget.Toast
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -17,6 +18,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -94,7 +96,7 @@ fun SettingsScreen(
                     saveIfChanged()
                 },
                 label = { Text("Model ID") },
-                placeholder = { Text("例如：gpt-4o") },
+                placeholder = { Text("例如：deepseek-flash") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
@@ -132,7 +134,7 @@ fun SettingsScreen(
                     saveIfChanged()
                 },
                 label = { Text("Base URL") },
-                placeholder = { Text("例如：https://api.openai.com/v1") },
+                placeholder = { Text("例如：https://api.deepseek.com") },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                 modifier = Modifier.fillMaxWidth()
@@ -153,6 +155,30 @@ fun SettingsScreen(
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            OutlinedButton(
+                onClick = {
+                    val defaults = AiSettings.resetToDefaults(context)
+                    modelId = defaults.modelId
+                    apiKey = defaults.apiKey
+                    baseUrl = defaults.baseUrl
+                    renderDelayMs = defaults.renderDelayMs.toString()
+                    Toast.makeText(context, "已恢复构建默认配置", Toast.LENGTH_SHORT).show()
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("恢复默认配置（.env）")
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = "默认配置来自构建时的 .env。如果之前在设置页保存过旧模型（比如 hy），点上面的按钮切回 DeepSeek。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }
